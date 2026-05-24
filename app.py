@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
 app = Flask(__name__)
@@ -314,7 +315,7 @@ def get_foreign_ratio_history(code, count=300):
         return []
     headers = {'User-Agent': 'Mozilla/5.0'}
     records = []
-    for page in range(1, 30):
+    for page in range(1, 7):  # 6페이지 = 약 150거래일(6개월) 분량, 속도 최적화
         try:
             url = f"https://finance.naver.com/item/frgn.naver?code={code}&page={page}"
             res = requests.get(url, headers=headers, timeout=7)
@@ -349,7 +350,7 @@ def get_sector_stocks(sector_code):
     results = []
     seen = set()
     try:
-        for page in range(1, 6):
+        for page in range(1, 3):  # 2페이지로 제한, 피어 표시용으로 충분
             url = f"https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={sector_code}&page={page}"
             res = requests.get(url, headers=headers, timeout=5)
             res.encoding = 'utf-8'
@@ -744,35 +745,44 @@ def api_performance():
             except Exception as e:
                 return jsonify({'error': f'종목 정보를 가져오는데 실패했습니다: {str(e)}'}), 404
     
-        # 1. Fetch stock and market index histories
+        market_symbol = "KOSPI" if stock['market'] == "코스피" else "KOSDAQ"
+
+        # 1단계: 독립적인 요청 4개를 병렬로 실행
         try:
-            stock_history = get_price_history(code)
-            if not stock_history:
-                return jsonify({'error': '주가 이력을 불러올 수 없습니다.'}), 404
-            # Fetch foreign ownership ratio early before additional heavy requests.
-            foreign_ratio = get_foreign_ratio_history(code, count=500)
-                
-            market_symbol = "KOSPI" if stock['market'] == "코스피" else "KOSDAQ"
-            market_history = get_price_history(market_symbol)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                fut_stock   = executor.submit(get_price_history, code)
+                fut_market  = executor.submit(get_price_history, market_symbol)
+                fut_foreign = executor.submit(get_foreign_ratio_history, code, 250)
+                fut_detail  = executor.submit(get_stock_detail, code)
+
+                stock_history          = fut_stock.result()
+                market_history         = fut_market.result()
+                foreign_ratio          = fut_foreign.result()
+                sector_name, sector_code = fut_detail.result()
         except Exception as e:
-            return jsonify({'error': f'기본 주가 및 지수 이력 로딩 실패: {str(e)}'}), 500
-            
-        # 2. Get Sector details and peers
-        try:
-            sector_name, sector_code = get_stock_detail(code)
-            sector_stocks = get_sector_stocks(sector_code) if sector_code else []
-            
-            # Pick top 4 peers excluding this stock
-            peers_list = [s for s in sector_stocks if s['code'] != code][:4]
-            peers = [{'code': s['code'], 'name': s['name']} for s in peers_list]
-        except Exception as e:
-            sector_name, sector_code = "미분류", ""
-            peers = []
-            print(f"Error fetching sector: {e}")
-            
-        # 3. KRX official industry index only.
+            return jsonify({'error': f'기본 데이터 로딩 실패: {str(e)}'}), 500
+
+        if not stock_history:
+            return jsonify({'error': '주가 이력을 불러올 수 없습니다.'}), 404
+
+        # 2단계: 업종 종목 목록과 업종 벤치마크 히스토리를 병렬로 실행
         sector_benchmark = resolve_korea_sector_benchmark(sector_name, stock['market'])
-        sector_history = fetch_korea_sector_benchmark_history(sector_benchmark)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fut_sector_stocks = executor.submit(get_sector_stocks, sector_code) if sector_code else None
+                fut_bench_hist    = executor.submit(fetch_korea_sector_benchmark_history, sector_benchmark)
+
+                sector_stocks  = fut_sector_stocks.result() if fut_sector_stocks else []
+                sector_history = fut_bench_hist.result()
+        except Exception as e:
+            sector_stocks  = []
+            sector_history = []
+            print(f"Error fetching sector data: {e}")
+
+        peers_list = [s for s in sector_stocks if s['code'] != code][:4]
+        peers = [{'code': s['code'], 'name': s['name']} for s in peers_list]
+
+        # 3단계: 업종 벤치마크 데이터 없으면 시총 상위 10개 프록시로 대체
         if not sector_history:
             sector_history = build_top10_mcap_sector_proxy(code, stock_history, sector_stocks)
             if sector_history:
@@ -875,6 +885,9 @@ def api_performance():
         'ohlc': stock_history,
         'foreign_ratio': foreign_ratio
     })
+
+# Vercel Python runtime entrypoint (looks for 'handler' or 'app')
+handler = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
