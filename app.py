@@ -1,868 +1,1912 @@
-from flask import Flask, jsonify, request, render_template
-import json
-import requests
-from bs4 import BeautifulSoup
-import re
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-import os
+/* ==========================================================================
+   Antigravity Stock Relative Returns Dashboard - Frontend Controller
+   ========================================================================== */
 
-app = Flask(__name__)
-
-# Common Korean stock nicknames
-NICKNAMES = {
-    '삼전': '삼성전자',
-    '삼전우': '삼성전자우',
-    '하닉': 'SK하이닉스',
-    '슼하': 'SK하이닉스',
-    '현차': '현대자동차',
-    '현대차': '현대자동차',
-    '기아차': '기아',
-    '엘전': 'LG전자',
-    '엘디': 'LG디스플레이',
-    '엘화': 'LG화학',
-    '엔솔': 'LG에너지솔루션',
-    '삼바': '삼성바이오로직스',
-    '삼에스': '삼성SDI',
-    '삼디': '삼성SDI',
-    '셀트': '셀트리온',
-    '네바': 'NAVER',
-    '카카': '카카오'
-}
-
-def load_stocks_db():
-    try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        db_path = os.path.join(base_dir, 'stocks.json')
-        with open(db_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading stocks.json: {e}")
-        return []
-
-stocks_db = load_stocks_db()
-
-# --- US STOCKS SUPPORT CONSTANTS & HELPER FUNCTIONS ---
-SECTOR_ETF_MAP = {
-    'Technology': 'XLK',
-    'Electronic Technology': 'XLK',
-    'Financial Services': 'XLF',
-    'Finance': 'XLF',
-    'Healthcare': 'XLV',
-    'Health Technology': 'XLV',
-    'Consumer Cyclical': 'XLY',
-    'Consumer Durables': 'XLY',
-    'Industrials': 'XLI',
-    'Industrial Services': 'XLI',
-    'Consumer Staples': 'XLP',
-    'Consumer Defensive': 'XLP',
-    'Energy': 'XLE',
-    'Utilities': 'XLU',
-    'Real Estate': 'XLRE',
-    'Basic Materials': 'XLB',
-    'Communication Services': 'XLC'
-}
-
-US_SECTOR_BENCHMARK_NAMES = {
-    'XLK': 'Technology Select Sector SPDR ETF',
-    'XLF': 'Financial Select Sector SPDR ETF',
-    'XLV': 'Health Care Select Sector SPDR ETF',
-    'XLY': 'Consumer Discretionary Select Sector SPDR ETF',
-    'XLI': 'Industrial Select Sector SPDR ETF',
-    'XLP': 'Consumer Staples Select Sector SPDR ETF',
-    'XLE': 'Energy Select Sector SPDR ETF',
-    'XLU': 'Utilities Select Sector SPDR ETF',
-    'XLRE': 'Real Estate Select Sector SPDR ETF',
-    'XLB': 'Materials Select Sector SPDR ETF',
-    'XLC': 'Communication Services Select Sector SPDR ETF',
-    '^GSPC': 'S&P 500'
-}
-
-KOREA_SECTOR_BENCHMARK_RULES = [
-    (('음식료', '식품', '담배'), '1005', 'KOSPI-05.KS', 'KRX 음식료품 업종지수'),
-    (('섬유', '의복'), '1006', 'KOSPI-06.KS', 'KRX 섬유의복 업종지수'),
-    (('종이', '목재'), '1007', 'KOSPI-07.KS', 'KRX 종이목재 업종지수'),
-    (('화학', '소재', '배터리', '2차전지'), '1008', 'KOSPI-08.KS', 'KRX 화학 업종지수'),
-    (('의약', '제약', '바이오', '건강관리'), '1009', 'KOSPI-09.KS', 'KRX 의약품 업종지수'),
-    (('비금속',), '1010', 'KOSPI-10.KS', 'KRX 비금속광물 업종지수'),
-    (('철강', '금속'), '1011', 'KOSPI-11.KS', 'KRX 철강금속 업종지수'),
-    (('기계',), '1012', 'KOSPI-12.KS', 'KRX 기계 업종지수'),
-    (('전기전자', '전자', '반도체', '디스플레이'), '1013', 'KOSPI-13.KS', 'KRX 전기전자 업종지수'),
-    (('의료정밀', '정밀'), '1014', 'KOSPI-14.KS', 'KRX 의료정밀 업종지수'),
-    (('운수장비', '자동차', '부품', '조선'), '1015', 'KOSPI-15.KS', 'KRX 운수장비 업종지수'),
-    (('유통',), '1016', 'KOSPI-16.KS', 'KRX 유통업 업종지수'),
-    (('전기가스', '가스'), '1017', 'KOSPI-17.KS', 'KRX 전기가스업 업종지수'),
-    (('건설',), '1018', 'KOSPI-18.KS', 'KRX 건설업 업종지수'),
-    (('운수창고', '항공', '해운', '물류'), '1019', 'KOSPI-19.KS', 'KRX 운수창고업 업종지수'),
-    (('통신',), '1020', 'KOSPI-20.KS', 'KRX 통신업 업종지수'),
-    (('금융', '은행', '증권', '보험'), '1021', 'KOSPI-21.KS', 'KRX 금융업 업종지수'),
-    (('서비스', '인터넷', '게임', '미디어', '소프트웨어'), '1026', 'KOSPI-26.KS', 'KRX 서비스업 업종지수')
-]
-
-US_PEERS_MAP = {}
-
-US_TICKER_NAMES = {
-    'AAPL': '애플 (Apple)',
-    'MSFT': '마이크로소프트 (Microsoft)',
-    'NVDA': '엔비디아 (NVIDIA)',
-    'AVGO': '브로드컴 (Broadcom)',
-    'ORCL': '오라클 (Oracle)',
-    'CRM': '세일즈포스 (Salesforce)',
-    'JPM': 'JP모건 (JPMorgan)',
-    'BAC': '뱅크오브아메리카 (BAC)',
-    'MS': '모건스탠리 (Morgan Stanley)',
-    'GS': '골드만삭스 (Goldman Sachs)',
-    'WFC': '웰스파고 (Wells Fargo)',
-    'V': '비자 (Visa)',
-    'LLY': '일라이릴리 (Eli Lilly)',
-    'UNH': '유나이티드헬스 (UnitedHealth)',
-    'JNJ': '존슨앤존슨 (Johnson & Johnson)',
-    'ABBV': '애브비 (AbbVie)',
-    'MRK': '머크 (Merck)',
-    'PFE': '화이자 (Pfizer)',
-    'AMZN': '아마존 (Amazon)',
-    'TSLA': '테슬라 (Tesla)',
-    'HD': '홈디포 (Home Depot)',
-    'MCD': '맥도날드 (McDonalds)',
-    'NKE': '나이키 (Nike)',
-    'SBUX': '스타벅스 (Starbucks)',
-    'GE': '제네럴일렉트릭 (GE)',
-    'CAT': '캐터필러 (Caterpillar)',
-    'UNP': '유니온퍼시픽 (Union Pacific)',
-    'HON': '허니웰 (Honeywell)',
-    'RTX': '레이시온 (RTX)',
-    'LMT': '록히드마틴 (Lockheed Martin)',
-    'PG': '프록터앤갬블 (P&G)',
-    'KO': '코카콜라 (Coca-Cola)',
-    'PEP': '펩시코 (PepsiCo)',
-    'COST': '코스트코 (Costco)',
-    'WMT': '월마트 (Walmart)',
-    'TGT': '타겟 (Target)',
-    'XOM': '엑슨모빌 (ExxonMobil)',
-    'CVX': '쉐브론 (Chevron)',
-    'COP': '코노코필립스 (ConocoPhillips)',
-    'SLB': '슐럼버거 (Schlumberger)',
-    'EOG': 'EOG리소스 (EOG Resources)',
-    'MPC': '마라톤페트롤리엄 (Marathon)',
-    'NEE': '넥스트에라 (NextEra)',
-    'SO': '서던컴퍼니 (Southern Co)',
-    'DUK': '듀크에너지 (Duke Energy)',
-    'D': '도미니언 (Dominion)',
-    'AEP': '아메리칸일렉트릭 (AEP)',
-    'SRE': '셈프라에너지 (Sempra)',
-    'PLD': '프로로지스 (Prologis)',
-    'AMT': '아메리칸타워 (American Tower)',
-    'EQIX': '에퀴닉스 (Equinix)',
-    'CCI': '크라운캐슬 (Crown Castle)',
-    'WY': '와이어하우저 (Weyerhaeuser)',
-    'PSA': '퍼블릭스토리지 (Public Storage)',
-    'LIN': '린데 (Linde)',
-    'APD': '에어프로덕츠 (Air Products)',
-    'SHW': '셔윈윌리엄스 (Sherwin-Williams)',
-    'FCX': '프리포트맥모란 (Freeport)',
-    'NEM': '뉴몬트 (Newmont)',
-    'CTVA': '코르테바 (Corteva)',
-    'META': '메타 (Meta)',
-    'GOOGL': '구글 (Alphabet)',
-    'NFLX': '넷플릭스 (Netflix)',
-    'DIS': '디즈니 (Disney)',
-    'TMUS': '티모바일 (T-Mobile)',
-    'VZ': '버라이즌 (Verizon)',
-    'SPY': 'S&P 500 ETF (SPY)'
-}
-
-def search_us_stocks(query):
-    if not query:
-        return []
-    url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=6&newsCount=0"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=2)
-        if res.status_code == 200:
-            data = res.json()
-            results = []
-            for quote in data.get('quotes', []):
-                quote_type = quote.get('quoteType')
-                exch = quote.get('exchange', '')
-                symbol = quote.get('symbol', '')
-                if quote_type == 'EQUITY' and exch in ['NYQ', 'NMS', 'NGM', 'PCX', 'ASE'] and '.' not in symbol:
-                    results.append({
-                        'code': symbol,
-                        'name': quote.get('shortname') or quote.get('longname') or symbol,
-                        'market': 'NASDAQ' if exch in ['NMS', 'NGM'] else 'NYSE',
-                        'sector': quote.get('sector', 'US Stock')
-                    })
-            return results
-    except Exception as e:
-        print(f"Error searching US stocks: {e}")
-    return []
-
-def fetch_yahoo_history(symbol):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=2y&interval=1d"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            chart = data.get('chart', {}).get('result', [None])[0]
-            if chart:
-                timestamps = chart.get('timestamp', [])
-                indicators = chart.get('indicators', {}).get('quote', [{}])[0]
-                opens   = indicators.get('open',   [])
-                highs   = indicators.get('high',   [])
-                lows    = indicators.get('low',    [])
-                closes  = indicators.get('close',  [])
-                volumes = indicators.get('volume', [])
-
-                history = []
-                for i, ts in enumerate(timestamps):
-                    c = closes[i]  if i < len(closes)  and closes[i]  is not None else None
-                    o = opens[i]   if i < len(opens)   and opens[i]   is not None else c
-                    h = highs[i]   if i < len(highs)   and highs[i]   is not None else c
-                    l = lows[i]    if i < len(lows)    and lows[i]    is not None else c
-                    v = volumes[i] if i < len(volumes) and volumes[i] is not None else 0
-                    if ts is not None and c is not None:
-                        date_str = datetime.fromtimestamp(ts).strftime('%Y%m%d')
-                        history.append({
-                            'date':   date_str,
-                            'open':   round(o, 4),
-                            'high':   round(h, 4),
-                            'low':    round(l, 4),
-                            'close':  round(c, 4),
-                            'volume': int(v)
-                        })
-                return history
-    except Exception as e:
-        print(f"Error fetching Yahoo history for {symbol}: {e}")
-    return []
-
-def fetch_us_stock_metadata(symbol):
-    url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
-    headers = {
-        'User-Agent': 'Mozilla/5.0'
-    }
-    name = symbol
-    market = 'US'
-    sector = 'US Stock'
-    try:
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            quotes = data.get('quotes', [])
-            if quotes:
-                quote = quotes[0]
-                name = quote.get('shortname') or quote.get('longname') or symbol
-                exch = quote.get('exchange', '')
-                market = 'NASDAQ' if exch in ['NMS', 'NGM'] else ('NYSE' if exch == 'NYQ' else 'US')
-                sector = quote.get('sector', 'US Stock')
-    except Exception as e:
-        print(f"Error fetching metadata for {symbol}: {e}")
-    return name, market, sector
-
-def get_stock_detail(code):
-    url = f"https://finance.naver.com/item/main.naver?code={code}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    res = requests.get(url, headers=headers)
-    res.encoding = 'utf-8'
-    soup = BeautifulSoup(res.text, 'html.parser')
+document.addEventListener('DOMContentLoaded', () => {
+    // DOM Elements
+    const searchInput = document.getElementById('stock-search');
+    const autocompleteList = document.getElementById('autocomplete-list');
+    const clearSearchBtn = document.getElementById('clear-search-btn');
+    const spinner = document.getElementById('loading-spinner');
+    const recentSearchesContainer = document.getElementById('recent-searches-container');
+    const recentSearchesList = document.getElementById('recent-searches-list');
+    const holdingContainer = document.getElementById('holding-container');
+    const holdingList = document.getElementById('holding-list');
+    const favoriteContainer = document.getElementById('favorite-container');
+    const favoriteList = document.getElementById('favorite-list');
+    const holdingInput = document.getElementById('holding-input');
+    const holdingAutocompleteList = document.getElementById('holding-autocomplete-list');
+    const favoriteInput = document.getElementById('favorite-input');
+    const favoriteAutocompleteList = document.getElementById('favorite-autocomplete-list');
+    const addHoldingBtn = document.getElementById('add-holding-btn');
+    const addFavoriteBtn = document.getElementById('add-favorite-btn');
     
-    # Get sector
-    sector_link = soup.find('a', href=re.compile(r'sise_group_detail\.naver\?type=upjong'))
-    sector_name = "미분류"
-    sector_code = ""
-    if sector_link:
-        sector_name = sector_link.text.strip()
-        href = sector_link.get('href', '')
-        match = re.search(r'no=(\d+)', href)
-        if match:
-            sector_code = match.group(1)
-            
-    return sector_name, sector_code
-
-def get_price_history(code, count=500):
-    url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count={count}&requestType=0"
-    headers = {
-        'User-Agent': 'Mozilla/5.0'
-    }
-    res = requests.get(url, headers=headers)
-    root = ET.fromstring(res.text)
-    items = root.findall('.//item')
+    // Views
+    const welcomeView = document.getElementById('welcome-view');
+    const mainDashboard = document.getElementById('main-dashboard');
     
-    history = []
-    for item in items:
-        data_str = item.attrib['data']
-        parts = data_str.split('|')
-        if len(parts) >= 5:
-            history.append({
-                'date': parts[0],
-                'open': float(parts[1]),
-                'high': float(parts[2]),
-                'low': float(parts[3]),
-                'close': float(parts[4]),
-                'volume': float(parts[5]) if len(parts) > 5 else 0.0
-            })
-    return history
-
-def get_foreign_ratio_history(code, count=300):
-    if not (code and code.isdigit() and len(code) == 6):
-        return []
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    records = []
-    for page in range(1, 30):
-        try:
-            url = f"https://finance.naver.com/item/frgn.naver?code={code}&page={page}"
-            res = requests.get(url, headers=headers, timeout=7)
-            res.encoding = 'euc-kr'
-            soup = BeautifulSoup(res.text, 'html.parser')
-            rows = soup.select('table.type2 tr')
-            found = 0
-            for row in rows:
-                cols = [c.get_text(' ', strip=True) for c in row.select('td')]
-                if len(cols) < 9:
-                    continue
-                date = re.sub(r'[^0-9]', '', cols[0])
-                ratio_match = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*%', cols[8])
-                if len(date) == 8 and ratio_match:
-                    records.append({'date': date, 'ratio': float(ratio_match.group(1))})
-                    found += 1
-            if found == 0:
-                break
-        except Exception as e:
-            print(f"Error fetching foreign ratio page {page} for {code}: {e}")
-            break
-    uniq = {}
-    for r in records:
-        uniq[r['date']] = r['ratio']
-    items = sorted(uniq.items(), key=lambda x: x[0])[-count:]
-    return [{'date': d, 'ratio': v} for d, v in items]
-
-def get_sector_stocks(sector_code):
-    if not sector_code:
-        return []
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    results = []
-    seen = set()
-    try:
-        for page in range(1, 6):
-            url = f"https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={sector_code}&page={page}"
-            res = requests.get(url, headers=headers, timeout=5)
-            res.encoding = 'utf-8'
-            soup = BeautifulSoup(res.text, 'html.parser')
-            table = soup.select_one('table.type_5')
-            if not table:
-                continue
-            links = table.select('a[href*=\"item/main.naver?code=\"]')
-            page_count = 0
-            for a in links:
-                href = a.get('href', '')
-                m = re.search(r'code=(\d{6})', href)
-                if not m:
-                    continue
-                code = m.group(1)
-                name = a.text.strip()
-                if not name or code in seen:
-                    continue
-                row = a.find_parent('tr')
-                cols = [td.get_text(' ', strip=True) for td in row.select('td')] if row else []
-                # Naver 업종 상세 표: 시가총액(억)은 일반적으로 9번째 컬럼 인덱스 8
-                market_cap = _parse_number(cols[8]) if len(cols) > 8 else 0
-                seen.add(code)
-                results.append({'code': code, 'name': name, 'market_cap': market_cap or 0})
-                page_count += 1
-            if page_count == 0:
-                break
-        return results
-    except Exception as e:
-        print(f"Error fetching sector stocks({sector_code}): {e}")
-        return []
-
-def _parse_number(value):
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    cleaned = re.sub(r'[^0-9.\-]', '', str(value))
-    if not cleaned or cleaned in ('-', '.', '-.'):
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-def resolve_korea_sector_benchmark(sector_name, market):
-    normalized = re.sub(r'\s+', '', sector_name or '')
-    for keywords, krx_code, yahoo_symbol, label in KOREA_SECTOR_BENCHMARK_RULES:
-        if any(keyword in normalized for keyword in keywords):
-            return {
-                'name': label,
-                'code': krx_code,
-                'symbol': yahoo_symbol,
-                'source': 'KRX 업종지수'
-            }
-
-    market_label = 'KOSDAQ' if market == '코스닥' else 'KOSPI'
-    return {
-        'name': f'KRX {market_label} 업종지수({sector_name or "미분류"})',
-        'code': '',
-        'symbol': '',
-        'source': 'KRX 업종지수'
-    }
-
-def fetch_krx_index_history(index_code, count=500):
-    if not index_code:
-        return []
-
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=max(900, count * 3))).strftime('%Y%m%d')
-    krx_code = str(index_code).zfill(4)
-    url = 'https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
-    payload = {
-        'bld': 'dbms/MDC/STAT/standard/MDCSTAT00301',
-        'locale': 'ko_KR',
-        'indIdx': krx_code[0],
-        'indIdx2': krx_code[1:],
-        'strtDd': start_date,
-        'endDd': end_date,
-        'share': '2',
-        'money': '3',
-        'csvxls_isNo': 'false'
-    }
-    headers = {
-        'User-Agent': 'Mozilla/5.0',
-        'Origin': 'https://data.krx.co.kr',
-        'Referer': 'https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0301010103'
-    }
-
-    try:
-        session = requests.Session()
-        # Prime KRX session/cookies before API call
-        session.get(
-            'https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0301010103',
-            headers=headers,
-            timeout=7
-        )
-        res = session.post(url, data=payload, headers=headers, timeout=7)
-        if res.status_code != 200 or not res.text.lstrip().startswith('{'):
-            # Retry once with a fresh primed session
-            session = requests.Session()
-            session.get(
-                'https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0301010103',
-                headers=headers,
-                timeout=7
-            )
-            res = session.post(url, data=payload, headers=headers, timeout=7)
-        if res.status_code != 200 or not res.text.lstrip().startswith('{'):
-            return []
-        data = res.json()
-        rows = data.get('output') or data.get('block1') or []
-        history = []
-        for row in rows:
-            raw_date = row.get('TRD_DD') or row.get('basDd') or row.get('BAS_DD') or row.get('일자')
-            raw_close = (
-                row.get('CLSPRC_IDX') or row.get('IDX_CLSPRC') or row.get('closeIdx') or
-                row.get('종가') or row.get('지수종가')
-            )
-            if not raw_date:
-                continue
-            date = re.sub(r'[^0-9]', '', str(raw_date))
-            close = _parse_number(raw_close)
-            if len(date) == 8 and close is not None:
-                history.append({
-                    'date': date,
-                    'open': close,
-                    'high': close,
-                    'low': close,
-                    'close': close,
-                    'volume': 0
-                })
-        return sorted(history, key=lambda x: x['date'])[-count:]
-    except Exception as e:
-        print(f"Error fetching KRX index {index_code}: {e}")
-    return []
-
-def fetch_korea_sector_benchmark_history(benchmark):
-    krx_history = fetch_krx_index_history(benchmark.get('code'))
-    if len(krx_history) >= 120:
-        return krx_history
-    return []
-
-def compute_peer_average_history(base_history, peer_histories):
-    aligned_dates = [x['date'] for x in base_history]
-    price_maps = {
-        p_code: {x['date']: x['close'] for x in p_hist}
-        for p_code, p_hist in peer_histories.items()
-        if p_hist
-    }
-    if not aligned_dates or not price_maps:
-        return []
-
-    base_date = ''
-    valid_codes = []
-    for date in aligned_dates:
-        valid_codes = [code for code, price_map in price_maps.items() if date in price_map]
-        if valid_codes:
-            base_date = date
-            break
-    if not base_date:
-        return []
-
-    sector_history = []
-    for date in aligned_dates:
-        norm_sum = 0
-        count = 0
-        for code in valid_codes:
-            price_map = price_maps.get(code, {})
-            base_price = price_map.get(base_date)
-            current_price = price_map.get(date)
-            if base_price and current_price:
-                norm_sum += (current_price / base_price) * 100
-                count += 1
-        if count > 0:
-            sector_history.append({
-                'date': date,
-                'open': norm_sum / count,
-                'high': norm_sum / count,
-                'low': norm_sum / count,
-                'close': norm_sum / count,
-                'volume': 0
-            })
-    return sector_history
-
-def build_top10_mcap_sector_proxy(base_code, base_history, sector_stocks):
-    candidates = []
-    for peer in sorted(sector_stocks, key=lambda x: x.get('market_cap', 0), reverse=True):
-        pcode = peer.get('code')
-        if not pcode or pcode == base_code:
-            continue
-        ph = get_price_history(pcode, count=500)
-        if not ph:
-            continue
-        candidates.append((pcode, peer.get('market_cap', 0), ph))
-    if not candidates:
-        return []
-    top10 = candidates[:10]
-    peer_histories = {code: hist for code, _, hist in top10}
-    return compute_peer_average_history(base_history, peer_histories)
-
-def parse_date(date_str):
-    date_str = date_str.replace('-', '')
-    return datetime.strptime(date_str, '%Y%m%d').date()
-
-def calculate_returns(history, periods):
-    if not history:
-        return {}
-        
-    dates = [parse_date(x['date']) for x in history]
-    closes = [x['close'] for x in history]
+    // Stock Header Elements
+    const stockNameEl = document.getElementById('stock-name');
+    const stockCodeBadge = document.getElementById('stock-code-badge');
+    const marketBadge = document.getElementById('market-badge');
+    const sectorBadge = document.getElementById('sector-badge');
     
-    if not dates:
-        return {}
-        
-    latest_date = dates[-1]
-    latest_close = closes[-1]
+    // Table Elements
+    const performanceTbody = document.getElementById('performance-tbody');
+    const sellWarningMessage = document.getElementById('sell-warning-message');
     
-    returns = {}
-    for period_name, days in periods.items():
-        if period_name == '1D':
-            if len(closes) >= 2:
-                returns['1D'] = {
-                    'return': ((closes[-1] - closes[-2]) / closes[-2]) * 100,
-                    'past_date': dates[-2].strftime('%Y-%m-%d'),
-                    'past_close': closes[-2],
-                    'latest_close': latest_close
-                }
-            else:
-                returns['1D'] = {
-                    'return': 0.0,
-                    'past_date': latest_date.strftime('%Y-%m-%d'),
-                    'past_close': latest_close,
-                    'latest_close': latest_close
-                }
-            continue
-            
-        target_date = latest_date - timedelta(days=days)
-        closest_idx = 0
-        min_diff = abs((dates[0] - target_date).days)
-        
-        for i, dt in enumerate(dates):
-            diff = abs((dt - target_date).days)
-            if diff < min_diff:
-                min_diff = diff
-                closest_idx = i
-                
-        past_close = closes[closest_idx]
-        if past_close == 0:
-            period_return = 0.0
-        else:
-            period_return = ((latest_close - past_close) / past_close) * 100
-            
-        returns[period_name] = {
-            'return': period_return,
-            'past_date': dates[closest_idx].strftime('%Y-%m-%d'),
-            'past_close': past_close,
-            'latest_close': latest_close
+    // Peers Elements
+    const peersListContainer = document.getElementById('peers-list');
+    const sectorBenchmarkDesc = document.getElementById('sector-benchmark-desc');
+    
+    // Chart Elements
+    const periodButtons = document.querySelectorAll('.period-btn');
+    let relativeChart = null; // Chart.js instance holder
+    
+    // State Variables
+    let rawChartData = null; // Stores { dates:[], stock:[], market:[], sector:[] }
+    let benchmarkSymbol = '지수';
+    let sectorBenchmarkLabel = '업종지수';
+    let rawOhlcData = [];    // Raw OHLC data for daily candlestick
+    let rawForeignRatioData = [];
+    let candleTimeframe = 'day'; // day | week | month
+    let candleWindowOffset = 0;  // 0 = latest window, positive = moved to past
+    let candleChartInstance = null; // ApexCharts instance holder
+    let volumeChartInstance = null; // ApexCharts volume instance holder
+    let macdChartInstance = null;   // ApexCharts MACD instance holder
+    let foreignChartInstance = null;
+    let candleDragState = null;
+    
+    // Recent Searches Storage Engine
+    function saveToRecentSearches(code, name) {
+        if (!code || !name) return;
+        let recent = JSON.parse(localStorage.getItem('recent_searches') || '[]');
+        // Remove duplicate to bring it to the front
+        recent = recent.filter(item => item.code !== code);
+        // Add to front
+        recent.unshift({ code, name });
+        // Keep only top 10 recent searches
+        recent = recent.slice(0, 10);
+        localStorage.setItem('recent_searches', JSON.stringify(recent));
+        renderRecentSearches();
+    }
+
+    function renderRecentSearches() {
+        const recent = JSON.parse(localStorage.getItem('recent_searches') || '[]');
+        if (recent.length === 0) {
+            recentSearchesContainer.classList.add('hidden');
+            return;
         }
-    return returns
 
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.route('/api/search')
-def api_search():
-    query = request.args.get('q', '').strip().lower()
-    if not query:
-        return jsonify([])
-        
-    results = []
-    
-    # 1. Nickname check
-    if query in NICKNAMES:
-        mapped_name = NICKNAMES[query]
-        for s in stocks_db:
-            if s['name'].lower() == mapped_name.lower():
-                results.append(s)
-                break
-                
-    # 2. Substring matches for KOREAN stocks
-    for s in stocks_db:
-        if any(r['code'] == s['code'] for r in results):
-            continue
-        if s['name'].lower().startswith(query) or query in s['name'].lower() or query in s['code']:
-            results.append(s)
-            if len(results) >= 7:
-                break
-                
-    # 3. Add US Stocks via Yahoo Finance autocomplete
-    try:
-        us_results = search_us_stocks(query)
-        for ur in us_results:
-            if len(results) >= 10:
-                break
-            if not any(r['code'] == ur['code'] for r in results):
-                results.append(ur)
-    except Exception as e:
-        print(f"Error merging US stock search: {e}")
-                
-    return jsonify(results)
-
-@app.route('/api/performance')
-def api_performance():
-    code = request.args.get('code', '').strip()
-    if not code:
-        return jsonify({'error': '종목 코드가 제공되지 않았습니다.'}), 400
-        
-    is_us_stock = not (code.isdigit() and len(code) == 6)
-    
-    if is_us_stock:
-        # --- US STOCK FLOW ---
-        try:
-            name, market, sector = fetch_us_stock_metadata(code)
-            stock = {'code': code, 'name': name, 'market': market, 'sector': sector}
-            
-            # 1. Fetch US stock history
-            stock_history = fetch_yahoo_history(code)
-            if not stock_history:
-                return jsonify({'error': f'미국 주식 {code}의 주가 이력을 가져오는데 실패했습니다.'}), 404
-                
-            # 2. Fetch Market index (S&P 500: ^GSPC)
-            market_symbol = "S&P 500"
-            market_history = fetch_yahoo_history('^GSPC')
-            if not market_history:
-                return jsonify({'error': 'S&P 500 지수 데이터를 가져오는데 실패했습니다.'}), 404
-                
-            # 3. Mapped sector ETF/index benchmark
-            etf = SECTOR_ETF_MAP.get(sector, '^GSPC')
-            sector_history = fetch_yahoo_history(etf)
-            sector_benchmark = {
-                'name': US_SECTOR_BENCHMARK_NAMES.get(etf, f'{sector} benchmark'),
-                'code': etf,
-                'symbol': etf,
-                'source': '미국 섹터 ETF/지수'
-            }
-            if not sector_history:
-                sector_history = market_history
-                sector_benchmark = {
-                    'name': 'S&P 500',
-                    'code': '^GSPC',
-                    'symbol': '^GSPC',
-                    'source': '미국 시장지수 대체'
-                }
-                
-            # Define peer US symbols
-            peer_symbols = US_PEERS_MAP.get(sector, ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'])
-            peers_list = [p for p in peer_symbols if p != code][:4]
-                
-            # Peers objects for detailed clicks in the frontend
-            peers = [{'code': p, 'name': US_TICKER_NAMES.get(p, p)} for p in peers_list]
-            sector_name = sector
-            sector_code = ""
-            foreign_ratio = []
-            
-        except Exception as e:
-            return jsonify({'error': f'미국 주식 분석 처리 중 에러가 발생했습니다: {str(e)}'}), 500
-    else:
-        # --- KOREAN STOCK FLOW ---
-        # Find stock in local DB
-        stock = next((s for s in stocks_db if s['code'] == code), None)
-        if not stock:
-            # Fallback details fetch
-            try:
-                url = f"https://finance.naver.com/item/main.naver?code={code}"
-                res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-                res.encoding = 'utf-8'
-                soup = BeautifulSoup(res.text, 'html.parser')
-                name_wrap = soup.find('div', class_='wrap_company')
-                if not name_wrap:
-                    return jsonify({'error': '종목을 찾을 수 없습니다.'}), 404
-                name = name_wrap.find('a').text.strip()
-                
-                market = "코스피"
-                description = soup.find('meta', {'name': 'description'})
-                if description and '코스닥' in description.get('content', ''):
-                    market = '코스닥'
-                    
-                stock = {'code': code, 'name': name, 'market': market}
-            except Exception as e:
-                return jsonify({'error': f'종목 정보를 가져오는데 실패했습니다: {str(e)}'}), 404
-    
-        # 1. Fetch stock and market index histories
-        try:
-            stock_history = get_price_history(code)
-            if not stock_history:
-                return jsonify({'error': '주가 이력을 불러올 수 없습니다.'}), 404
-            # Fetch foreign ownership ratio early before additional heavy requests.
-            foreign_ratio = get_foreign_ratio_history(code, count=500)
-                
-            market_symbol = "KOSPI" if stock['market'] == "코스피" else "KOSDAQ"
-            market_history = get_price_history(market_symbol)
-        except Exception as e:
-            return jsonify({'error': f'기본 주가 및 지수 이력 로딩 실패: {str(e)}'}), 500
-            
-        # 2. Get Sector details and peers
-        try:
-            sector_name, sector_code = get_stock_detail(code)
-            sector_stocks = get_sector_stocks(sector_code) if sector_code else []
-            
-            # Pick top 4 peers excluding this stock
-            peers_list = [s for s in sector_stocks if s['code'] != code][:4]
-            peers = [{'code': s['code'], 'name': s['name']} for s in peers_list]
-        except Exception as e:
-            sector_name, sector_code = "미분류", ""
-            peers = []
-            print(f"Error fetching sector: {e}")
-            
-        # 3. KRX official industry index only.
-        sector_benchmark = resolve_korea_sector_benchmark(sector_name, stock['market'])
-        sector_history = fetch_korea_sector_benchmark_history(sector_benchmark)
-        if not sector_history:
-            sector_history = build_top10_mcap_sector_proxy(code, stock_history, sector_stocks)
-            if sector_history:
-                sector_benchmark = {
-                    'name': f"{sector_name} 업종 프록시(시총 상위 10개 평균)",
-                    'code': sector_code or '',
-                    'symbol': '',
-                    'source': 'Naver 업종 구성종목(시총 상위 10개)'
-                }
-            else:
-                return jsonify({
-                    'error': f"KRX 공식 업종지수 및 시총상위10 프록시 데이터를 불러오지 못했습니다. 기준: {sector_benchmark.get('name', '업종지수')}"
-                }), 502
-                    
-    # 5. Calculate returns for periods
-    aligned_dates = [x['date'] for x in stock_history]
-    periods = {
-        '1D': 1,
-        '1W': 7,
-        '1M': 30,
-        '3M': 90,
-        '6M': 180,
-        '12M': 365
+        recentSearchesList.innerHTML = '';
+        recent.forEach(item => {
+            const btn = document.createElement('button');
+            btn.className = 'recent-badge';
+            btn.textContent = item.name;
+            btn.addEventListener('click', () => {
+                searchInput.value = item.name;
+                loadStockPerformance(item.code);
+            });
+            recentSearchesList.appendChild(btn);
+        });
+        recentSearchesContainer.classList.remove('hidden');
     }
-    
-    # Calculate returns for stock, market and sector benchmark
-    stock_returns = calculate_returns(stock_history, periods)
-    market_returns = calculate_returns(market_history, periods)
-    sector_returns = calculate_returns(sector_history, periods)
-    
-    # Compile performance comparison table
-    performance_table = []
-    for p in ['1D', '1W', '1M', '3M', '6M', '12M']:
-        s_ret = stock_returns.get(p, {}).get('return', 0.0)
-        m_ret = market_returns.get(p, {}).get('return', 0.0)
-        sec_ret = sector_returns.get(p, {}).get('return', 0.0)
-        
-        performance_table.append({
-            'period': p,
-            'stock_return': s_ret,
-            'market_return': m_ret,
-            'sector_return': sec_ret,
-            'vs_market': s_ret - m_ret,
-            'vs_sector': s_ret - sec_ret
-        })
-        
-    # Generate interactive chart series data (last 240 trading days ~ 1 year)
-    chart_len = min(250, len(stock_history))
-    chart_dates = aligned_dates[-chart_len:]
-    chart_start_date = chart_dates[0]
-    
-    chart_stock = []
-    chart_market = []
-    chart_sector = []
-    
-    # Maps for easy lookups
-    stock_map = {x['date']: x['close'] for x in stock_history}
-    market_map = {x['date']: x['close'] for x in market_history}
-    sector_map = {x['date']: x['close'] for x in sector_history}
-    
-    stock_base = next((stock_map[d] for d in chart_dates if d in stock_map), 1.0)
-    market_base = next((market_map[d] for d in chart_dates if d in market_map), 1.0)
-    sector_base = next((sector_map[d] for d in chart_dates if d in sector_map), 1.0)
-    prev_stock = stock_base
-    prev_market = market_base
-    prev_sector = sector_base
-    
-    for date in chart_dates:
-        prev_stock = stock_map.get(date, prev_stock)
-        prev_market = market_map.get(date, prev_market)
-        prev_sector = sector_map.get(date, prev_sector)
-        s_val = (prev_stock / stock_base) * 100 if stock_base else 100.0
-        m_val = (prev_market / market_base) * 100 if market_base else 100.0
-        sec_val = (prev_sector / sector_base) * 100 if sector_base else 100.0
-        
-        formatted_date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
-        
-        chart_stock.append({'date': formatted_date, 'value': s_val})
-        chart_market.append({'date': formatted_date, 'value': m_val})
-        chart_sector.append({'date': formatted_date, 'value': sec_val})
-        
-    return jsonify({
-        'stock': {
-            'code': stock['code'],
-            'name': stock['name'],
-            'market': stock['market'],
-            'sector_name': sector_name,
-            'sector_code': sector_code
-        },
-        'benchmark': market_symbol,
-        'sector_benchmark': sector_benchmark,
-        'peers': peers,
-        'table': performance_table,
-        'chart': {
-            'dates': [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in chart_dates],
-            'stock': [x['value'] for x in chart_stock],
-            'market': [x['value'] for x in chart_market],
-            'sector': [x['value'] for x in chart_sector]
-        },
-        'ohlc': stock_history,
-        'foreign_ratio': foreign_ratio
-    })
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    function saveNamedList(key, name) {
+        const val = (name || '').trim();
+        if (!val) return;
+        let arr = JSON.parse(localStorage.getItem(key) || '[]');
+        arr = arr.filter(x => x !== val);
+        arr.unshift(val);
+        arr = arr.slice(0, 10);
+        localStorage.setItem(key, JSON.stringify(arr));
+    }
+
+    async function openNamedStock(name) {
+        const q = (name || '').trim();
+        if (!q) return;
+        try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            if (!res.ok) return;
+            const items = await res.json();
+            if (items.length > 0) {
+                searchInput.value = items[0].name;
+                loadStockPerformance(items[0].code);
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    }
+
+    function renderNamedList(key, container, listEl) {
+        const arr = JSON.parse(localStorage.getItem(key) || '[]');
+        listEl.innerHTML = '';
+        if (!arr.length) {
+            container.classList.add('hidden');
+            return;
+        }
+        arr.forEach((name) => {
+            const btn = document.createElement('button');
+            btn.className = 'recent-badge';
+            btn.innerHTML = `<span>${name}</span><span class="named-remove">×</span>`;
+            btn.addEventListener('click', async () => {
+                await openNamedStock(name);
+            });
+            const removeEl = btn.querySelector('.named-remove');
+            removeEl?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const next = arr.filter(x => x !== name);
+                localStorage.setItem(key, JSON.stringify(next));
+                renderNamedList(key, container, listEl);
+            });
+            listEl.appendChild(btn);
+        });
+        container.classList.remove('hidden');
+    }
+
+    // Initialize Recent Searches
+    renderRecentSearches();
+    renderNamedList('holding_stocks', holdingContainer, holdingList);
+    renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
+    if (addHoldingBtn) {
+        addHoldingBtn.addEventListener('click', () => {
+            saveNamedList('holding_stocks', holdingInput.value);
+            holdingInput.value = '';
+            if (holdingAutocompleteList) holdingAutocompleteList.classList.add('hidden');
+            renderNamedList('holding_stocks', holdingContainer, holdingList);
+        });
+    }
+    if (addFavoriteBtn) {
+        addFavoriteBtn.addEventListener('click', () => {
+            saveNamedList('favorite_stocks', favoriteInput.value);
+            favoriteInput.value = '';
+            renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
+        });
+    }
+
+    // Popular Queries Clicks
+    const popularBtns = document.querySelectorAll('.popular-btn');
+    popularBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            searchInput.value = btn.textContent;
+            triggerSearch(btn.textContent);
+        });
+    });
+
+    // 1. Clear Search Bar Event
+    clearSearchBtn.addEventListener('click', () => {
+        searchInput.value = '';
+        searchInput.focus();
+        clearSearchBtn.style.display = 'none';
+        autocompleteList.classList.add('hidden');
+    });
+
+    // 2. Search Input Keyup Event (Debounced Autocomplete)
+    let debounceTimer;
+    searchInput.addEventListener('keyup', (e) => {
+        const query = searchInput.value.trim();
+        
+        // Toggle Clear button visibility
+        if (query.length > 0) {
+            clearSearchBtn.style.display = 'block';
+        } else {
+            clearSearchBtn.style.display = 'none';
+            autocompleteList.classList.add('hidden');
+            return;
+        }
+
+        // Detect Enter Key
+        if (e.key === 'Enter') {
+            triggerSearch(query);
+            return;
+        }
+
+        // Live autocomplete search after 200ms debounce
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            fetchAutocomplete(query);
+        }, 200);
+    });
+
+    // Close autocomplete when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!searchInput.contains(e.target) && !autocompleteList.contains(e.target)) {
+            autocompleteList.classList.add('hidden');
+        }
+        if (
+            holdingAutocompleteList &&
+            !holdingInput.contains(e.target) &&
+            !holdingAutocompleteList.contains(e.target)
+        ) {
+            holdingAutocompleteList.classList.add('hidden');
+        }
+        if (
+            favoriteAutocompleteList &&
+            !favoriteInput.contains(e.target) &&
+            !favoriteAutocompleteList.contains(e.target)
+        ) {
+            favoriteAutocompleteList.classList.add('hidden');
+        }
+    });
+
+    if (holdingInput && holdingAutocompleteList) {
+        let holdingDebounce;
+        holdingInput.addEventListener('keyup', (e) => {
+            const query = holdingInput.value.trim();
+            if (e.key === 'Enter') {
+                saveNamedList('holding_stocks', holdingInput.value);
+                holdingInput.value = '';
+                holdingAutocompleteList.classList.add('hidden');
+                renderNamedList('holding_stocks', holdingContainer, holdingList);
+                return;
+            }
+            if (!query) {
+                holdingAutocompleteList.classList.add('hidden');
+                return;
+            }
+            clearTimeout(holdingDebounce);
+            holdingDebounce = setTimeout(async () => {
+                try {
+                    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    if (!res.ok) throw new Error('holding search failed');
+                    const items = await res.json();
+                    holdingAutocompleteList.innerHTML = '';
+                    if (!items.length) {
+                        holdingAutocompleteList.classList.add('hidden');
+                        return;
+                    }
+                    items.slice(0, 8).forEach((item) => {
+                        const li = document.createElement('li');
+                        li.className = 'autocomplete-item';
+                        li.innerHTML = `<div class="ac-name-wrapper"><span class="ac-name">${item.name}</span><span class="ac-code">${item.code}</span></div>`;
+                        li.addEventListener('click', () => {
+                            holdingInput.value = item.name;
+                            saveNamedList('holding_stocks', item.name);
+                            holdingInput.value = '';
+                            holdingAutocompleteList.classList.add('hidden');
+                            renderNamedList('holding_stocks', holdingContainer, holdingList);
+                        });
+                        holdingAutocompleteList.appendChild(li);
+                    });
+                    holdingAutocompleteList.classList.remove('hidden');
+                } catch (err) {
+                    console.error(err);
+                }
+            }, 180);
+        });
+    }
+    if (favoriteInput && favoriteAutocompleteList) {
+        let favoriteDebounce;
+        favoriteInput.addEventListener('keyup', (e) => {
+            const query = favoriteInput.value.trim();
+            if (e.key === 'Enter') {
+                saveNamedList('favorite_stocks', favoriteInput.value);
+                favoriteInput.value = '';
+                favoriteAutocompleteList.classList.add('hidden');
+                renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
+                return;
+            }
+            if (!query) {
+                favoriteAutocompleteList.classList.add('hidden');
+                return;
+            }
+            clearTimeout(favoriteDebounce);
+            favoriteDebounce = setTimeout(async () => {
+                try {
+                    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    if (!res.ok) throw new Error('favorite search failed');
+                    const items = await res.json();
+                    favoriteAutocompleteList.innerHTML = '';
+                    if (!items.length) {
+                        favoriteAutocompleteList.classList.add('hidden');
+                        return;
+                    }
+                    items.slice(0, 8).forEach((item) => {
+                        const li = document.createElement('li');
+                        li.className = 'autocomplete-item';
+                        li.innerHTML = `<div class="ac-name-wrapper"><span class="ac-name">${item.name}</span><span class="ac-code">${item.code}</span></div>`;
+                        li.addEventListener('click', () => {
+                            favoriteInput.value = item.name;
+                            saveNamedList('favorite_stocks', item.name);
+                            favoriteInput.value = '';
+                            favoriteAutocompleteList.classList.add('hidden');
+                            renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
+                        });
+                        favoriteAutocompleteList.appendChild(li);
+                    });
+                    favoriteAutocompleteList.classList.remove('hidden');
+                } catch (err) {
+                    console.error(err);
+                }
+            }, 180);
+        });
+    }
+
+    // 3. Fetch Autocomplete Suggestions
+    async function fetchAutocomplete(query) {
+        if (!query) return;
+        try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+            if (!res.ok) throw new Error('Search failed');
+            const data = await res.json();
+            renderAutocomplete(data);
+        } catch (err) {
+            console.error('Autocomplete fetch error:', err);
+        }
+    }
+
+    // 4. Render Autocomplete Dropdown
+    function renderAutocomplete(items) {
+        autocompleteList.innerHTML = '';
+        if (items.length === 0) {
+            autocompleteList.classList.add('hidden');
+            return;
+        }
+
+        items.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'autocomplete-item';
+            
+            let marketClass = 'ac-market-kospi';
+            if (item.market === '코스닥') {
+                marketClass = 'ac-market-kosdaq';
+            } else if (item.market === 'NASDAQ' || item.market === 'NYSE' || item.market === 'US') {
+                marketClass = 'ac-market-us';
+            }
+            
+            li.innerHTML = `
+                <div class="ac-name-wrapper">
+                    <span class="ac-name">${item.name}</span>
+                    <span class="ac-code">${item.code}</span>
+                </div>
+                <span class="ac-market ${marketClass}">${item.market}</span>
+            `;
+            
+            li.addEventListener('click', () => {
+                searchInput.value = item.name;
+                autocompleteList.classList.add('hidden');
+                loadStockPerformance(item.code);
+            });
+            
+            autocompleteList.appendChild(li);
+        });
+        
+        autocompleteList.classList.remove('hidden');
+    }
+
+    // 5. Trigger Search when Enter is hit or Popular Queries is clicked
+    async function triggerSearch(query) {
+        if (!query) return;
+        autocompleteList.classList.add('hidden');
+        showLoading(true);
+        
+        try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+            
+            if (data.length > 0) {
+                // If there's a match, load the first one
+                searchInput.value = data[0].name;
+                loadStockPerformance(data[0].code);
+            } else {
+                showLoading(false);
+                alert(`'${query}'에 매칭되는 종목을 찾을 수 없습니다. 종목명이나 코드를 확인해 주세요.`);
+            }
+        } catch (err) {
+            showLoading(false);
+            console.error('Search trigger failed:', err);
+            alert('종목 검색 도중 오류가 발생했습니다.');
+        }
+    }
+
+    // 6. Fetch Stock Performance and Render Dashboard
+    async function loadStockPerformance(code) {
+        showLoading(true);
+        welcomeView.classList.add('hidden');
+        mainDashboard.classList.add('hidden');
+        
+        try {
+            const res = await fetch(`/api/performance?code=${code}`);
+            if (!res.ok) {
+                const errData = await res.json();
+                throw new Error(errData.error || '실패');
+            }
+            const data = await res.json();
+            
+            // Set State
+            rawChartData = data.chart;
+            benchmarkSymbol = data.benchmark;
+            sectorBenchmarkLabel = data.sector_benchmark?.name || data.stock.sector_name || '업종지수';
+            rawOhlcData = data.ohlc || [];
+            rawForeignRatioData = data.foreign_ratio || [];
+            
+            renderDashboard(data);
+            
+            // Save search to recent searches list
+            saveToRecentSearches(data.stock.code, data.stock.name);
+        } catch (err) {
+            showLoading(false);
+            welcomeView.classList.remove('hidden');
+            alert(`수익률 로딩 오류: ${err.message}`);
+        }
+    }
+
+    // 7. Toggle Loading Spinner
+    function showLoading(isLoading) {
+        if (isLoading) {
+            spinner.classList.remove('hidden');
+        } else {
+            spinner.classList.add('hidden');
+        }
+    }
+
+    // 8. Render Dashboard UI
+    function renderDashboard(data) {
+        // A. Set Header Meta
+        stockNameEl.textContent = data.stock.name;
+        stockCodeBadge.textContent = data.stock.code;
+        
+        marketBadge.textContent = data.stock.market;
+        marketBadge.className = 'stock-badge ' + (data.stock.market === '코스피' ? 'market-badge-kospi' : 'market-badge-kosdaq');
+        
+        sectorBadge.textContent = data.stock.sector_name;
+        
+        // B. Populate Table
+        renderPerformanceTable(data.table);
+        
+        // C. Render Sector Benchmark and references
+        renderPeersList(data.peers, data.sector_benchmark);
+        
+        // D. Setup and Draw Chart
+        renderChart(12); // Default to 12 months chart
+        
+        // E. Render Daily Candlestick Chart
+        renderCandleChart();
+        
+        // Reset period buttons active state
+        periodButtons.forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.getAttribute('data-months') === '12') {
+                btn.classList.add('active');
+            }
+        });
+        
+        // Show Dashboard and Hide Spinner
+        showLoading(false);
+        mainDashboard.classList.remove('hidden');
+    }
+
+    // 9. Render Performance Table Helper
+    function renderPerformanceTable(tableRows) {
+        performanceTbody.innerHTML = '';
+        if (sellWarningMessage) {
+            sellWarningMessage.classList.add('hidden');
+            sellWarningMessage.textContent = '';
+        }
+
+        const weeklyRow = tableRows.find(row => row.period === '1W');
+        const monthlyRow = tableRows.find(row => row.period === '1M');
+        const marketSellSignal = weeklyRow?.vs_market <= -5.0 && monthlyRow?.vs_market <= -5.0;
+        const sectorSellSignal = weeklyRow?.vs_sector <= -5.0 && monthlyRow?.vs_sector <= -5.0;
+        if (sellWarningMessage && (marketSellSignal || sectorSellSignal)) {
+            const reasons = [];
+            if (marketSellSignal) reasons.push('시장 지수 대비 1주일/1개월 동시 경고');
+            if (sectorSellSignal) reasons.push('업종지수 대비 1주일/1개월 동시 경고');
+            sellWarningMessage.textContent = `매도 추천: ${reasons.join(', ')}`;
+            sellWarningMessage.classList.remove('hidden');
+        }
+        
+        tableRows.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            // Helpers to style performance returns
+            const formatPct = (val) => `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
+            const formatRelative = (val) => `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
+            const getBadgeClass = (val) => val > 0 ? 'badge-pos' : (val < 0 ? 'badge-neg' : 'zero-val');
+            const getMarketBadgeClass = (val) => val > 0 ? 'badge-market-pos' : (val < 0 ? 'badge-market-neg' : 'zero-val');
+            
+            const periodLabels = {
+                '1D': '당일',
+                '1W': '1주일',
+                '1M': '1개월',
+                '3M': '3개월',
+                '6M': '6개월',
+                '12M': '12개월'
+            };
+            
+            const isWarningPeriod = ['1W', '1M'].includes(row.period);
+            const isMarketWarning = isWarningPeriod && row.vs_market <= -5.0;
+            const isSectorWarning = isWarningPeriod && row.vs_sector <= -5.0;
+            
+            let marketBadgeContent = '';
+            if (isMarketWarning) {
+                tr.classList.add('underperform-row');
+                marketBadgeContent = `<span class="${getBadgeClass(row.vs_market)}">${formatRelative(row.vs_market)}</span> <span class="warning-badge">⚠️ 경고</span>`;
+            } else {
+                marketBadgeContent = `<span class="${getMarketBadgeClass(row.vs_market)}">${formatRelative(row.vs_market)}</span>`;
+            }
+
+            let sectorBadgeContent = '';
+            if (isSectorWarning) {
+                tr.classList.add('underperform-row');
+                sectorBadgeContent = `<span class="${getBadgeClass(row.vs_sector)}">${formatRelative(row.vs_sector)}</span> <span class="warning-badge">⚠️ 경고</span>`;
+            } else {
+                sectorBadgeContent = `<span class="${getBadgeClass(row.vs_sector)}">${formatRelative(row.vs_sector)}</span>`;
+            }
+            
+            tr.innerHTML = `
+                <td class="period-cell">${periodLabels[row.period] || row.period}</td>
+                <td class="return-val"><span class="${getBadgeClass(row.stock_return)}">${formatPct(row.stock_return)}</span></td>
+                <td class="relative-cell">${marketBadgeContent}</td>
+                <td class="relative-cell">${sectorBadgeContent}</td>
+            `;
+            
+            performanceTbody.appendChild(tr);
+        });
+    }
+
+    // 9B. Helper to calculate Moving Averages (MA)
+    function calculateMA(ohlcList, period) {
+        const ma = [];
+        for (let i = 0; i < ohlcList.length; i++) {
+            if (i < period - 1) {
+                ma.push({ x: ohlcList[i].date, y: null });
+            } else {
+                let sum = 0;
+                for (let j = 0; j < period; j++) {
+                    sum += ohlcList[i - j].close;
+                }
+                ma.push({ x: ohlcList[i].date, y: parseFloat((sum / period).toFixed(2)) });
+            }
+        }
+        return ma;
+    }
+
+    // 9B-2. Helper to calculate MACD (12, 26, 9)
+    function calculateMACD(ohlcList) {
+        const closes = ohlcList.map(item => item.close);
+        
+        const getEMA = (prices, period) => {
+            const k = 2 / (period + 1);
+            const ema = [];
+            let currentEma = prices[0] || 0;
+            for (let i = 0; i < prices.length; i++) {
+                if (i === 0) {
+                    currentEma = prices[0] || 0;
+                } else {
+                    currentEma = prices[i] * k + currentEma * (1 - k);
+                }
+                ema.push(i < period - 1 ? null : parseFloat(currentEma.toFixed(4)));
+            }
+            return ema;
+        };
+        
+        const ema12 = getEMA(closes, 12);
+        const ema26 = getEMA(closes, 26);
+        
+        const macdLine = [];
+        for (let i = 0; i < closes.length; i++) {
+            if (ema12[i] === null || ema26[i] === null) {
+                macdLine.push(null);
+            } else {
+                macdLine.push(parseFloat((ema12[i] - ema26[i]).toFixed(4)));
+            }
+        }
+        
+        const signalLine = [];
+        const k9 = 2 / (9 + 1);
+        let currentSignal = null;
+        for (let i = 0; i < closes.length; i++) {
+            if (macdLine[i] === null) {
+                signalLine.push(null);
+            } else {
+                if (currentSignal === null) {
+                    currentSignal = macdLine[i];
+                    signalLine.push(null);
+                } else {
+                    currentSignal = macdLine[i] * k9 + currentSignal * (1 - k9);
+                    signalLine.push(parseFloat(currentSignal.toFixed(4)));
+                }
+            }
+        }
+        
+        // Nullify the first 8 valid MACD points of the Signal line to prevent starting bias
+        let validMacdCount = 0;
+        for (let i = 0; i < closes.length; i++) {
+            if (macdLine[i] !== null) {
+                validMacdCount++;
+                if (validMacdCount < 9) {
+                    signalLine[i] = null;
+                }
+            }
+        }
+        
+        const histogram = [];
+        for (let i = 0; i < closes.length; i++) {
+            if (macdLine[i] === null || signalLine[i] === null) {
+                histogram.push(null);
+            } else {
+                histogram.push(parseFloat((macdLine[i] - signalLine[i]).toFixed(4)));
+            }
+        }
+        
+        return {
+            macd: macdLine,
+            signal: signalLine,
+            histogram: histogram
+        };
+    }
+
+    function aggregateOHLC(ohlcList, timeframe) {
+        if (timeframe === 'day') return ohlcList.slice();
+        const grouped = new Map();
+        for (const item of ohlcList) {
+            const y = item.date.slice(0, 4);
+            const m = item.date.slice(4, 6);
+            const d = item.date.slice(6, 8);
+            const dateObj = new Date(`${y}-${m}-${d}T00:00:00`);
+            let key = '';
+            if (timeframe === 'week') {
+                const day = (dateObj.getDay() + 6) % 7;
+                const monday = new Date(dateObj);
+                monday.setDate(dateObj.getDate() - day);
+                key = `${monday.getFullYear()}${String(monday.getMonth() + 1).padStart(2, '0')}${String(monday.getDate()).padStart(2, '0')}`;
+            } else {
+                key = `${y}${m}01`;
+            }
+            if (!grouped.has(key)) {
+                grouped.set(key, {
+                    date: key,
+                    open: item.open,
+                    high: item.high,
+                    low: item.low,
+                    close: item.close,
+                    volume: item.volume
+                });
+            } else {
+                const g = grouped.get(key);
+                g.high = Math.max(g.high, item.high);
+                g.low = Math.min(g.low, item.low);
+                g.close = item.close;
+                g.volume += item.volume;
+            }
+        }
+        return Array.from(grouped.values()).sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    // 9C. Render Daily Candlestick and Moving Averages
+    function renderCandleChart() {
+        const chartDiv = document.getElementById('candle-chart');
+        if (!chartDiv) return;
+        
+        if (!rawOhlcData || rawOhlcData.length === 0) {
+            chartDiv.innerHTML = '<div style="padding: 3rem; text-align: center; color: var(--text-secondary);">캔들 차트 데이터가 없거나 로딩 중입니다.</div>';
+            return;
+        }
+        
+        // Read user input days
+        let daysToDisplay = 120;
+        const daysInput = document.getElementById('candle-days-input');
+        if (daysInput) {
+            const parsedVal = parseInt(daysInput.value);
+            if (parsedVal >= 10 && parsedVal <= 400) {
+                daysToDisplay = parsedVal;
+            }
+        }
+        const sourceOhlcData = aggregateOHLC(rawOhlcData, candleTimeframe);
+        candleWindowOffset = Math.max(0, Math.min(candleWindowOffset, Math.max(0, sourceOhlcData.length - daysToDisplay)));
+        const maxStart = Math.max(0, sourceOhlcData.length - daysToDisplay);
+        const visibleStart = Math.max(0, maxStart - candleWindowOffset);
+        const visibleEnd = Math.min(sourceOhlcData.length - 1, visibleStart + daysToDisplay - 1);
+        const visibleOhlcData = sourceOhlcData.slice(visibleStart, visibleEnd + 1);
+        
+        // Calculate Moving Averages (MA) on the complete dataset so the beginning of the display window is accurate!
+        const ma5 = calculateMA(sourceOhlcData, 5);
+        const ma10 = calculateMA(sourceOhlcData, 10);
+        const ma20 = calculateMA(sourceOhlcData, 20);
+        const ma60 = calculateMA(sourceOhlcData, 60);
+        const ma120 = calculateMA(sourceOhlcData, 120);
+        const ma240 = calculateMA(sourceOhlcData, 240);
+        
+        // Helper to format YYYYMMDD -> YYYY.MM.DD
+        const formatDate = (str) => {
+            if (!str) return str;
+            const m = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+            return m ? `${m[1]}.${m[2]}.${m[3]}` : str;
+        };
+
+        // Format only the visible window so all three subcharts share the exact same period.
+        const candleSeriesData = visibleOhlcData.map(item => ({
+            x: formatDate(item.date),
+            y: [item.open, item.high, item.low, item.close]
+        }));
+        
+        const ma5SeriesData = ma5.slice(visibleStart).map(item => ({ x: formatDate(item.x), y: item.y }));
+        const ma10SeriesData = ma10.slice(visibleStart).map(item => ({ x: formatDate(item.x), y: item.y }));
+        const ma20SeriesData = ma20.slice(visibleStart).map(item => ({ x: formatDate(item.x), y: item.y }));
+        const ma60SeriesData = ma60.slice(visibleStart).map(item => ({ x: formatDate(item.x), y: item.y }));
+        const ma120SeriesData = ma120.slice(visibleStart).map(item => ({ x: formatDate(item.x), y: item.y }));
+        const ma240SeriesData = ma240.slice(visibleStart).map(item => ({ x: formatDate(item.x), y: item.y }));
+        
+        // Destroy past charts to prevent double-draw instances
+        if (candleChartInstance) {
+            candleChartInstance.destroy();
+            candleChartInstance = null;
+        }
+        if (volumeChartInstance) {
+            volumeChartInstance.destroy();
+            volumeChartInstance = null;
+        }
+        if (macdChartInstance) {
+            macdChartInstance.destroy();
+            macdChartInstance = null;
+        }
+        if (foreignChartInstance) {
+            foreignChartInstance.destroy();
+            foreignChartInstance = null;
+        }
+
+        const chartGroupId = 'stock-charts';
+        const volumeChartHeight = 188;
+        const macdChartHeight = 314;
+        const foreignChartHeight = 180;
+        const positiveColor = '#dc2626';
+        const negativeColor = '#2563eb';
+        const hoverLineColor = '#0f172a';
+        const sharedCrosshair = {
+            show: true,
+            width: 1,
+            position: 'front',
+            opacity: 0.75,
+            stroke: {
+                color: hoverLineColor,
+                width: 1,
+                dashArray: 4
+            }
+        };
+        const getPlotMetrics = (target, fallbackLeft = 84, fallbackRight = 24) => {
+            const targetRect = target.getBoundingClientRect();
+            const grid = target.querySelector('.apexcharts-grid');
+            if (!grid) {
+                return {
+                    left: fallbackLeft,
+                    right: fallbackRight,
+                    width: Math.max(1, targetRect.width - fallbackLeft - fallbackRight)
+                };
+            }
+            const gridRect = grid.getBoundingClientRect();
+            const left = Math.max(0, gridRect.left - targetRect.left);
+            const right = Math.max(0, targetRect.right - gridRect.right);
+            return {
+                left,
+                right,
+                width: Math.max(1, gridRect.width)
+            };
+        };
+        
+        // Detect crossovers and prepare annotations
+        const candleCrossMarkers = [];
+        const detectCrosses = (short, long, name, lane = 0) => {
+            for (let i = 1; i < short.length; i++) {
+                const prevShort = short[i - 1].y;
+                const prevLong = long[i - 1].y;
+                const curShort = short[i].y;
+                const curLong = long[i].y;
+                if (prevShort == null || prevLong == null || curShort == null || curLong == null) continue;
+                const isGolden = prevShort < prevLong && curShort > curLong;
+                const isDead = prevShort > prevLong && curShort < curLong;
+                if (isGolden || isDead) {
+                    const labelColor = isGolden ? positiveColor : negativeColor;
+                    candleCrossMarkers.push({
+                        index: i,
+                        text: name,
+                        lane,
+                        isGolden,
+                        color: labelColor,
+                        background: 'rgba(255, 255, 255, 0.16)'
+                    });
+                }
+            }
+        };
+        // Detect crosses on full datasets so annotations are visible when panning
+        detectCrosses(ma5, ma20, '5/20', 0);
+        detectCrosses(ma5, ma60, '5/60', 1);
+        detectCrosses(ma20, ma60, '20/60', 2);
+
+        // Prepare Volume series data
+        const volumeSeriesData = visibleOhlcData.map(item => ({
+            x: formatDate(item.date),
+            y: item.volume
+        }));
+
+        // Prepare MACD series data
+        const macdData = calculateMACD(sourceOhlcData);
+        const macdSeriesData = macdData.macd.slice(visibleStart).map((val, idx) => ({
+            x: formatDate(visibleOhlcData[idx].date),
+            y: val
+        }));
+        const signalSeriesData = macdData.signal.slice(visibleStart).map((val, idx) => ({
+            x: formatDate(visibleOhlcData[idx].date),
+            y: val
+        }));
+        const histogramSeriesData = macdData.histogram.slice(visibleStart).map((val, idx) => ({
+            x: formatDate(visibleOhlcData[idx].date),
+            y: val
+        }));
+
+        const macdFiniteValues = [
+            ...macdData.macd,
+            ...macdData.signal,
+            ...macdData.histogram
+        ].filter((val) => Number.isFinite(val));
+        const macdMin = macdFiniteValues.length ? Math.min(...macdFiniteValues) : -1;
+        const macdMax = macdFiniteValues.length ? Math.max(...macdFiniteValues) : 1;
+        const macdSpan = Math.max(1, macdMax - macdMin);
+
+        const macdCrossAnnotations = [];
+        for (let i = Math.max(1, visibleStart); i < sourceOhlcData.length; i++) {
+            const prevMacd = macdData.macd[i - 1];
+            const prevSignal = macdData.signal[i - 1];
+            const curMacd = macdData.macd[i];
+            const curSignal = macdData.signal[i];
+            if (prevMacd == null || prevSignal == null || curMacd == null || curSignal == null) continue;
+
+            const isGolden = prevMacd < prevSignal && curMacd > curSignal;
+            const isDead = prevMacd > prevSignal && curMacd < curSignal;
+            if (!isGolden && !isDead) continue;
+
+            const goldenOffset = macdSpan * 0.07;
+            const deadOffset = macdSpan * 0.006;
+            const topLine = Math.max(curMacd, curSignal);
+            const bottomLine = Math.min(curMacd, curSignal);
+            macdCrossAnnotations.push({
+                x: formatDate(sourceOhlcData[i].date),
+                y: isGolden ? bottomLine - goldenOffset : topLine + deadOffset,
+                marker: {
+                    size: 0
+                },
+                label: {
+                    text: isGolden ? '▲' : '▼',
+                    offsetY: isGolden ? 12 : 0,
+                    borderColor: 'transparent',
+                    borderWidth: 0,
+                    style: {
+                        color: isGolden ? positiveColor : negativeColor,
+                        background: 'rgba(255, 255, 255, 0)',
+                        fontSize: '18px',
+                        fontWeight: 900,
+                        padding: { top: 0, bottom: 0, left: 2, right: 2 }
+                    }
+                }
+            });
+        }
+
+        const buildMacdBackgroundBands = () => {
+            const bands = [];
+            let activeSign = null;
+            let startIndex = null;
+
+            const pushBand = (fromIndex, toIndex, sign) => {
+                if (fromIndex == null || toIndex == null || toIndex < fromIndex || !sign) return;
+                bands.push({
+                    x: formatDate(sourceOhlcData[fromIndex].date),
+                    x2: formatDate(sourceOhlcData[toIndex].date),
+                    fillColor: sign === 'positive' ? '#fecaca' : '#bfdbfe',
+                    opacity: 0.28,
+                    label: {
+                        text: '',
+                        style: {
+                            background: 'transparent'
+                        }
+                    }
+                });
+            };
+
+            for (let i = visibleStart; i < macdData.macd.length; i++) {
+                const value = macdData.macd[i];
+                if (value == null) continue;
+                const sign = value >= 0 ? 'positive' : 'negative';
+
+                if (activeSign === null) {
+                    activeSign = sign;
+                    startIndex = i;
+                    continue;
+                }
+
+                if (sign !== activeSign) {
+                    pushBand(startIndex, i, activeSign);
+                    activeSign = sign;
+                    startIndex = i;
+                }
+            }
+
+            pushBand(startIndex, macdData.macd.length - 1, activeSign);
+            return bands;
+        };
+
+        const macdBackgroundBands = buildMacdBackgroundBands();
+        const candleBackgroundBands = macdBackgroundBands.map((band) => ({
+            ...band,
+            opacity: 0.32,
+            label: { text: '' }
+        }));
+        const macdZeroLine = [{
+            y: 0,
+            borderColor: '#94a3b8',
+            strokeDashArray: 4
+        }];
+
+        const renderSyncedHoverOverlay = (chartId, dataPointIndex) => {
+            const target = document.getElementById(chartId);
+            if (!target || dataPointIndex < 0 || !sourceOhlcData[dataPointIndex]) return;
+
+            if (dataPointIndex < visibleStart || dataPointIndex > visibleEnd) return;
+
+            const oldOverlay = target.querySelector('.synced-hover-overlay');
+            if (oldOverlay) oldOverlay.remove();
+
+            const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+            const xPercent = ((dataPointIndex - visibleStart) / visibleSpan) * 100;
+            const date = formatDate(sourceOhlcData[dataPointIndex].date);
+
+            target.style.position = 'relative';
+            const plotMetrics = getPlotMetrics(target);
+            const overlay = document.createElement('div');
+            overlay.className = 'synced-hover-overlay';
+            Object.assign(overlay.style, {
+                position: 'absolute',
+                top: '0',
+                bottom: '0',
+                left: `${plotMetrics.left}px`,
+                right: `${plotMetrics.right}px`,
+                pointerEvents: 'none',
+                zIndex: '14'
+            });
+
+            const line = document.createElement('div');
+            Object.assign(line.style, {
+                position: 'absolute',
+                left: `${xPercent}%`,
+                top: '10px',
+                bottom: '24px',
+                borderLeft: `1px dashed ${hoverLineColor}`,
+                opacity: '0.75',
+                transform: 'translateX(-50%)'
+            });
+
+            const label = document.createElement('span');
+            label.textContent = date;
+            Object.assign(label.style, {
+                position: 'absolute',
+                left: `${xPercent}%`,
+                bottom: '2px',
+                transform: 'translateX(-50%)',
+                whiteSpace: 'nowrap',
+                padding: '2px 5px',
+                borderRadius: '4px',
+                background: hoverLineColor,
+                color: '#ffffff',
+                fontSize: '10px',
+                fontWeight: '700'
+            });
+
+            overlay.append(line, label);
+            target.appendChild(overlay);
+        };
+
+        const clearSyncedHoverOverlay = (chartId) => {
+            const target = document.getElementById(chartId);
+            const oldOverlay = target?.querySelector('.synced-hover-overlay');
+            if (oldOverlay) oldOverlay.remove();
+        };
+
+        let syncedHoverIndex = null;
+        const syncSubChartsByIndex = (dataPointIndex) => {
+            if (dataPointIndex == null || dataPointIndex < 0 || !sourceOhlcData[dataPointIndex]) return;
+            if (syncedHoverIndex === dataPointIndex) return;
+            syncedHoverIndex = dataPointIndex;
+
+            if (!chartDiv.querySelector('.ma-cross-overlay')) {
+                renderCandleCrossOverlay();
+            }
+            renderSyncedHoverOverlay('candle-chart', dataPointIndex);
+            renderSyncedHoverOverlay('volume-chart', dataPointIndex);
+            renderSyncedHoverOverlay('macd-chart', dataPointIndex);
+        };
+
+        const clearSyncedHover = () => {
+            if (syncedHoverIndex === null) return;
+            syncedHoverIndex = null;
+            clearSyncedHoverOverlay('candle-chart');
+            clearSyncedHoverOverlay('volume-chart');
+            clearSyncedHoverOverlay('macd-chart');
+        };
+
+        const indexFromMouseEvent = (event) => {
+            if (!event || typeof event.clientX !== 'number') return -1;
+            const rect = chartDiv.getBoundingClientRect();
+            const plotMetrics = getPlotMetrics(chartDiv);
+            const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - plotMetrics.left) / plotMetrics.width));
+            return Math.round(ratio * Math.max(0, visibleOhlcData.length - 1));
+        };
+
+        const renderCandleCrossOverlay = () => {
+            chartDiv.style.position = 'relative';
+            const oldOverlay = chartDiv.querySelector('.ma-cross-overlay');
+            if (oldOverlay) oldOverlay.remove();
+
+            const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+            const visibleMarkers = candleCrossMarkers.filter((marker) => (
+                marker.index >= visibleStart && marker.index <= visibleEnd
+            ));
+
+            if (!visibleMarkers.length) return;
+
+            const overlay = document.createElement('div');
+            overlay.className = 'ma-cross-overlay';
+            const plotMetrics = getPlotMetrics(chartDiv);
+            Object.assign(overlay.style, {
+                position: 'absolute',
+                top: '34px',
+                bottom: '30px',
+                left: `${plotMetrics.left}px`,
+                right: `${plotMetrics.right}px`,
+                pointerEvents: 'none',
+                zIndex: '12'
+            });
+
+            const visibleLows = visibleOhlcData.map((d) => d.low).filter((v) => Number.isFinite(v));
+            const visibleHighs = visibleOhlcData.map((d) => d.high).filter((v) => Number.isFinite(v));
+            const priceMin = visibleLows.length ? Math.min(...visibleLows) : 0;
+            const priceMax = visibleHighs.length ? Math.max(...visibleHighs) : 1;
+            const priceRange = Math.max(1e-9, priceMax - priceMin);
+            const priceToTopPercent = (price) => ((priceMax - price) / priceRange) * 100;
+
+            visibleMarkers.forEach((marker) => {
+                const xPercent = ((marker.index - visibleStart) / visibleSpan) * 100;
+                const localIdx = marker.index - visibleStart;
+                const candle = visibleOhlcData[localIdx];
+                if (!candle) return;
+                const tag = document.createElement('span');
+                tag.textContent = marker.text;
+                Object.assign(tag.style, {
+                    position: 'absolute',
+                    left: `${xPercent}%`,
+                    transform: 'translateX(-50%)',
+                    whiteSpace: 'nowrap',
+                    padding: '1px 4px',
+                    border: `1px solid ${marker.color}40`,
+                    borderRadius: '4px',
+                    background: marker.background,
+                    color: marker.color,
+                    fontSize: '9px',
+                    fontWeight: '700',
+                    boxShadow: 'none'
+                });
+                const anchorPrice = marker.isGolden ? candle.low : candle.high;
+                const topPct = priceToTopPercent(anchorPrice);
+                if (marker.isGolden) {
+                    tag.style.top = `${Math.min(97, topPct + 7 + marker.lane * 2)}%`;
+                    tag.style.color = '#dc2626';
+                    tag.style.border = '1px solid rgba(220, 38, 38, 0.35)';
+                    tag.style.background = 'rgba(220, 38, 38, 0.08)';
+                } else {
+                    tag.style.top = `${Math.max(2, topPct - 13 - marker.lane * 2)}%`;
+                    tag.style.color = '#2563eb';
+                    tag.style.border = '1px solid rgba(37, 99, 235, 0.35)';
+                    tag.style.background = 'rgba(37, 99, 235, 0.08)';
+                }
+                overlay.appendChild(tag);
+            });
+
+            chartDiv.appendChild(overlay);
+        };
+
+        const renderCandleBackgroundOverlay = () => {
+            chartDiv.style.position = 'relative';
+            const oldBg = chartDiv.querySelector('.candle-bg-overlay');
+            if (oldBg) oldBg.remove();
+            if (!macdBackgroundBands.length) return;
+
+            const overlay = document.createElement('div');
+            overlay.className = 'candle-bg-overlay';
+            const plotMetrics = getPlotMetrics(chartDiv);
+            Object.assign(overlay.style, {
+                position: 'absolute',
+                top: '34px',
+                bottom: '30px',
+                left: `${plotMetrics.left}px`,
+                right: `${plotMetrics.right}px`,
+                pointerEvents: 'none',
+                zIndex: '1'
+            });
+
+            const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+            const dateToIndex = {};
+            sourceOhlcData.forEach((d, i) => { dateToIndex[formatDate(d.date)] = i; });
+
+            macdBackgroundBands.forEach((band) => {
+                const fromIdx = dateToIndex[band.x];
+                const toIdx = dateToIndex[band.x2];
+                if (fromIdx == null || toIdx == null) return;
+                const start = Math.max(visibleStart, Math.min(fromIdx, toIdx));
+                const end = Math.min(visibleEnd, Math.max(fromIdx, toIdx));
+                if (end < start) return;
+                const leftPct = ((start - visibleStart) / visibleSpan) * 100;
+                const rightPct = ((end - visibleStart) / visibleSpan) * 100;
+                const segment = document.createElement('div');
+                Object.assign(segment.style, {
+                    position: 'absolute',
+                    left: `${leftPct}%`,
+                    width: `${Math.max(0.8, rightPct - leftPct)}%`,
+                    top: '0',
+                    bottom: '0',
+                    background: band.fillColor === '#fecaca'
+                        ? 'rgba(254, 202, 202, 0.38)'
+                        : 'rgba(191, 219, 254, 0.38)'
+                });
+                overlay.appendChild(segment);
+            });
+
+            chartDiv.appendChild(overlay);
+        };
+
+        // 1. Candlestick Chart Options
+        const candleOptions = {
+            series: [
+                {
+                    name: '캔들스틱',
+                    type: 'candlestick',
+                    data: candleSeriesData
+                },
+                {
+                    name: '5일선',
+                    type: 'line',
+                    data: ma5SeriesData
+                },
+                {
+                    name: '10일선',
+                    type: 'line',
+                    data: ma10SeriesData
+                },
+                {
+                    name: '20일선',
+                    type: 'line',
+                    data: ma20SeriesData
+                },
+                {
+                    name: '60일선',
+                    type: 'line',
+                    data: ma60SeriesData
+                },
+                {
+                    name: '120일선',
+                    type: 'line',
+                    data: ma120SeriesData
+                },
+                {
+                    name: '240일선',
+                    type: 'line',
+                    data: ma240SeriesData
+                }
+            ],
+            chart: {
+                id: 'candle-chart',
+                group: chartGroupId,
+                height: 320,
+                type: 'line',
+                events: {
+                    mouseMove: function(event, chartContext, opts) {
+                        const localIndex = opts?.dataPointIndex >= 0
+                            ? opts.dataPointIndex
+                            : indexFromMouseEvent(event);
+                        const pointIndex = localIndex >= 0 ? visibleStart + localIndex : -1;
+                        syncSubChartsByIndex(pointIndex);
+                    },
+                    mouseLeave: function() {
+                        clearSyncedHover();
+                    }
+                },
+                zoom: {
+                    enabled: true,
+                    type: 'x',
+                    autoScaleYaxis: true,
+                    allowMouseWheelZoom: false
+                },
+                toolbar: {
+                    show: false,
+                    autoSelected: 'pan',
+                    tools: {
+                        download: false,
+                        selection: false,
+                        zoom: false,
+                        zoomin: false,
+                        zoomout: false,
+                        pan: true,
+                        reset: false
+                    }
+                },
+                animations: {
+                    enabled: false
+                },
+                fontFamily: 'Outfit, Inter, sans-serif'
+            },
+            plotOptions: {
+                candlestick: {
+                    colors: {
+                        upward: '#dc2626',   // 양봉 (Red)
+                        downward: '#2563eb'  // 음봉 (Blue)
+                    },
+                    wick: {
+                        useFillColor: true
+                    }
+                }
+            },
+            stroke: {
+                width: [1, 1.5, 1.5, 1.5, 2, 2.2, 2.5],
+                curve: 'smooth'
+            },
+            colors: [
+                '#808080', // Candle base outline placeholder color
+                '#eab308', // MA5: Gold
+                '#f97316', // MA10: Orange
+                '#ec4899', // MA20: Pink
+                '#10b981', // MA60: Green
+                '#8b5cf6', // MA120: Purple
+                '#64748b'  // MA240: Slate
+            ],
+            xaxis: {
+                type: 'category',
+                labels: {
+                    show: false // Hide X-axis labels to avoid duplication
+                },
+                crosshairs: sharedCrosshair,
+                axisBorder: { show: false },
+                axisTicks: { show: false },
+                tooltip: { enabled: false }
+            },
+            yaxis: {
+                labels: {
+                    minWidth: 80,
+                    formatter: function(val) {
+                        const isUS = !/^[0-9]+$/.test(stockCodeBadge.textContent);
+                        return isUS ? '$' + val.toFixed(2) : val.toLocaleString() + '원';
+                    },
+                    style: {
+                        colors: '#64748b',
+                        fontSize: '11px',
+                        fontWeight: 500
+                    }
+                }
+            },
+            tooltip: {
+                shared: true,
+                intersect: false,
+                custom: function({ seriesIndex, dataPointIndex, w }) {
+                    const ohlc = w.config.series[0].data[dataPointIndex];
+                    if (!ohlc) return '';
+                    
+                    const date = ohlc.x;
+                    const [open, high, low, close] = ohlc.y;
+                    
+                    const isUS = !/^[0-9]+$/.test(stockCodeBadge.textContent);
+                    const formatPrice = (p) => isUS ? '$' + p.toFixed(2) : p.toLocaleString() + '원';
+                    
+                    let html = `<div class="apexcharts-custom-tooltip" style="padding: 10px; font-family: 'Outfit'; font-size: 12px; background: rgba(255,255,255,0.95); border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.08);">`;
+                    html += `<div style="font-weight: 700; color: #1e293b; margin-bottom: 6px;">📅 날짜: ${date}</div>`;
+                    html += `<div style="display: grid; grid-template-columns: auto auto; gap: 4px 15px; color: #475569;">`;
+                    html += `<span>시가:</span><span style="font-weight:600; text-align:right;">${formatPrice(open)}</span>`;
+                    html += `<span>고가:</span><span style="font-weight:600; text-align:right; color:#dc2626;">${formatPrice(high)}</span>`;
+                    html += `<span>저가:</span><span style="font-weight:600; text-align:right; color:#2563eb;">${formatPrice(low)}</span>`;
+                    html += `<span>종가:</span><span style="font-weight:600; text-align:right; color:#1e293b;">${formatPrice(close)}</span>`;
+                    
+                    for (let s = 1; s < w.config.series.length; s++) {
+                        const val = w.config.series[s].data[dataPointIndex].y;
+                        if (val !== null) {
+                            html += `<span>${w.config.series[s].name}:</span><span style="font-weight:600; text-align:right; color:${w.config.colors[s]};">${formatPrice(val)}</span>`;
+                        }
+                    }
+                    html += `</div></div>`;
+                    return html;
+                }
+            },
+            legend: {
+                position: 'top',
+                horizontalAlign: 'center',
+                labels: {
+                    colors: '#475569'
+                }
+            },
+            annotations: {
+                position: 'back',
+                xaxis: candleBackgroundBands
+            }
+        };
+
+        // 2. Volume Chart Options
+        const volumeOptions = {
+            series: [
+                {
+                    name: '거래량',
+                    data: volumeSeriesData
+                }
+            ],
+            annotations: {
+                xaxis: []
+            },
+            chart: {
+                id: 'volume-chart',
+                group: chartGroupId,
+                height: volumeChartHeight,
+                type: 'bar',
+                zoom: {
+                    enabled: true,
+                    type: 'x',
+                    allowMouseWheelZoom: false
+                },
+                toolbar: {
+                    show: false,
+                    autoSelected: 'pan',
+                    tools: {
+                        download: false,
+                        selection: false,
+                        zoom: false,
+                        zoomin: false,
+                        zoomout: false,
+                        pan: true,
+                        reset: false
+                    }
+                },
+                animations: {
+                    enabled: false
+                },
+                fontFamily: 'Outfit, Inter, sans-serif'
+            },
+            dataLabels: {
+                enabled: false
+            },
+            plotOptions: {
+                bar: {
+                    columnWidth: '80%'
+                }
+            },
+            colors: [
+                function({ value, seriesIndex, dataPointIndex, w }) {
+                    const rawIndex = visibleStart + dataPointIndex;
+                    if (rawIndex === 0) return positiveColor;
+                    const item = rawOhlcData[rawIndex];
+                    const prev = rawOhlcData[rawIndex - 1];
+                    if (!item || !prev) return '#808080';
+                    return item.volume >= prev.volume ? positiveColor : negativeColor;
+                }
+            ],
+            xaxis: {
+                type: 'category',
+                labels: {
+                    show: false // Hide X-axis labels to avoid duplication
+                },
+                crosshairs: sharedCrosshair,
+                axisBorder: { show: false },
+                axisTicks: { show: false },
+                tooltip: { enabled: false }
+            },
+            yaxis: {
+                labels: {
+                    minWidth: 80,
+                    formatter: function(val) {
+                        if (val >= 1000000) {
+                            return (val / 1000000).toFixed(1) + 'M';
+                        } else if (val >= 1000) {
+                            return (val / 1000).toFixed(0) + 'K';
+                        }
+                        return val.toLocaleString();
+                    },
+                    style: {
+                        colors: '#64748b',
+                        fontSize: '11px',
+                        fontWeight: 500
+                    }
+                }
+            },
+            tooltip: {
+                shared: true,
+                intersect: false,
+                custom: function({ seriesIndex, dataPointIndex, w }) {
+                    const item = rawOhlcData[visibleStart + dataPointIndex];
+                    if (!item) return '';
+                    const date = formatDate(item.date);
+                    let html = `<div class="apexcharts-custom-tooltip" style="padding: 10px; font-family: 'Outfit'; font-size: 12px; background: rgba(255,255,255,0.95); border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.08);">`;
+                    html += `<div style="font-weight: 700; color: #1e293b; margin-bottom: 4px;">📅 날짜: ${date}</div>`;
+                    html += `<div style="color: #475569;">거래량: <span style="font-weight:600; color:#1e293b;">${item.volume.toLocaleString()}주</span></div>`;
+                    html += `</div>`;
+                    return html;
+                }
+            },
+            legend: {
+                show: false
+            }
+        };
+
+        // 3. MACD Chart Options
+        const macdOptions = {
+            series: [
+                {
+                    name: 'MACD',
+                    type: 'line',
+                    data: macdSeriesData
+                },
+                {
+                    name: 'Signal',
+                    type: 'line',
+                    data: signalSeriesData
+                },
+                {
+                    name: 'Histogram',
+                    type: 'bar',
+                    data: histogramSeriesData
+                }
+            ],
+            annotations: {
+                xaxis: macdBackgroundBands.map((band) => ({ ...band })),
+                yaxis: macdZeroLine,
+                points: macdCrossAnnotations
+            },
+            chart: {
+                id: 'macd-chart',
+                group: chartGroupId,
+                height: macdChartHeight,
+                type: 'line',
+                zoom: {
+                    enabled: true,
+                    type: 'x',
+                    allowMouseWheelZoom: false
+                },
+                toolbar: {
+                    show: false,
+                    autoSelected: 'pan',
+                    tools: {
+                        download: false,
+                        selection: false,
+                        zoom: false,
+                        zoomin: false,
+                        zoomout: false,
+                        pan: true,
+                        reset: false
+                    }
+                },
+                animations: {
+                    enabled: false
+                },
+                fontFamily: 'Outfit, Inter, sans-serif'
+            },
+            plotOptions: {
+                bar: {
+                    columnWidth: '80%'
+                }
+            },
+            stroke: {
+                width: [1.5, 1.5, 0],
+                curve: 'smooth'
+            },
+            colors: [
+                function({ value, seriesIndex, dataPointIndex, w }) {
+                    if (seriesIndex === 0) return '#0284c7';
+                    if (seriesIndex === 1) return '#f59e0b';
+                    return value >= 0 ? '#dc2626' : '#2563eb';
+                }
+            ],
+            xaxis: {
+                type: 'category',
+                labels: {
+                    style: {
+                        colors: '#64748b',
+                        fontSize: '11px',
+                        fontWeight: 500
+                    },
+                    rotate: -45,
+                    rotateAlways: false
+                },
+                tickAmount: Math.min(10, visibleOhlcData.length),
+                crosshairs: sharedCrosshair
+            },
+            yaxis: {
+                labels: {
+                    minWidth: 80,
+                    formatter: function(val) {
+                        return val !== null ? val.toFixed(2) : '';
+                    },
+                    style: {
+                        colors: '#64748b',
+                        fontSize: '11px',
+                        fontWeight: 500
+                    }
+                }
+            },
+            tooltip: {
+                shared: true,
+                intersect: false,
+                custom: function({ seriesIndex, dataPointIndex, w }) {
+                    const item = rawOhlcData[visibleStart + dataPointIndex];
+                    if (!item) return '';
+                    const date = formatDate(item.date);
+                    const macdVal = macdSeriesData[dataPointIndex].y;
+                    const signalVal = signalSeriesData[dataPointIndex].y;
+                    const histVal = histogramSeriesData[dataPointIndex].y;
+                    
+                    let html = `<div class="apexcharts-custom-tooltip" style="padding: 10px; font-family: 'Outfit'; font-size: 12px; background: rgba(255,255,255,0.95); border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.08);">`;
+                    html += `<div style="font-weight: 700; color: #1e293b; margin-bottom: 6px;">📅 날짜: ${date}</div>`;
+                    html += `<div style="display: grid; grid-template-columns: auto auto; gap: 4px 15px; color: #475569;">`;
+                    if (macdVal !== null) {
+                        html += `<span>MACD:</span><span style="font-weight:600; text-align:right; color:#0284c7;">${macdVal.toFixed(2)}</span>`;
+                    }
+                    if (signalVal !== null) {
+                        html += `<span>Signal:</span><span style="font-weight:600; text-align:right; color:#f59e0b;">${signalVal.toFixed(2)}</span>`;
+                    }
+                    if (histVal !== null) {
+                        const histColor = histVal >= 0 ? '#dc2626' : '#2563eb';
+                        html += `<span>Histogram:</span><span style="font-weight:600; text-align:right; color:${histColor};">${histVal.toFixed(2)}</span>`;
+                    }
+                    html += `</div></div>`;
+                    return html;
+                }
+            },
+            legend: {
+                position: 'top',
+                horizontalAlign: 'center',
+                labels: {
+                    colors: '#475569'
+                }
+            }
+        };
+
+        const isKoreanStock = /^[0-9]{6}$/.test(stockCodeBadge.textContent || '');
+        const foreignRatioMap = {};
+        rawForeignRatioData.forEach((r) => { foreignRatioMap[r.date] = r.ratio; });
+        const foreignSeriesData = isKoreanStock ? visibleOhlcData.map((item) => ({
+            x: formatDate(item.date),
+            y: Object.prototype.hasOwnProperty.call(foreignRatioMap, item.date) ? foreignRatioMap[item.date] : null
+        })) : [];
+
+        const foreignOptions = {
+            series: [{ name: '외국인 비율(%)', data: foreignSeriesData }],
+            chart: {
+                id: 'foreign-chart',
+                group: chartGroupId,
+                height: foreignChartHeight,
+                type: 'line',
+                zoom: { enabled: true, type: 'x', allowMouseWheelZoom: false },
+                toolbar: { show: false },
+                animations: { enabled: false },
+                fontFamily: 'Outfit, Inter, sans-serif'
+            },
+            stroke: { width: 1.8, curve: 'smooth' },
+            colors: ['#7c3aed'],
+            xaxis: { type: 'category', labels: { show: false }, crosshairs: sharedCrosshair },
+            yaxis: {
+                labels: {
+                    minWidth: 80,
+                    formatter: (v) => (v == null ? '' : `${v.toFixed(2)}%`),
+                    style: { colors: '#64748b', fontSize: '11px', fontWeight: 500 }
+                }
+            },
+            tooltip: { shared: false, intersect: false },
+            legend: { show: true, position: 'top', labels: { colors: '#475569' } }
+        };
+
+        // Render All Synchronized Charts
+
+        candleChartInstance = new ApexCharts(document.getElementById('candle-chart'), candleOptions);
+        Promise.resolve(candleChartInstance.render()).then(() => {
+            window.setTimeout(renderCandleBackgroundOverlay, 0);
+            window.setTimeout(renderCandleCrossOverlay, 0);
+            window.setTimeout(renderCandleBackgroundOverlay, 250);
+            window.setTimeout(renderCandleCrossOverlay, 250);
+        });
+
+        volumeChartInstance = new ApexCharts(document.getElementById('volume-chart'), volumeOptions);
+        Promise.resolve(volumeChartInstance.render()).then(() => {
+            const volumeDiv = document.getElementById('volume-chart');
+            volumeDiv?.addEventListener('mousemove', (ev) => {
+                const rect = volumeDiv.getBoundingClientRect();
+                const plotMetrics = getPlotMetrics(volumeDiv);
+                const ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left - plotMetrics.left) / plotMetrics.width));
+                const localIndex = Math.round(ratio * Math.max(0, visibleOhlcData.length - 1));
+                syncSubChartsByIndex(visibleStart + localIndex);
+            });
+            volumeDiv?.addEventListener('mouseleave', clearSyncedHover);
+        });
+
+        macdChartInstance = new ApexCharts(document.getElementById('macd-chart'), macdOptions);
+        Promise.resolve(macdChartInstance.render()).then(() => {
+            const macdDiv = document.getElementById('macd-chart');
+            macdDiv?.addEventListener('mousemove', (ev) => {
+                const rect = macdDiv.getBoundingClientRect();
+                const plotMetrics = getPlotMetrics(macdDiv);
+                const ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left - plotMetrics.left) / plotMetrics.width));
+                const localIndex = Math.round(ratio * Math.max(0, visibleOhlcData.length - 1));
+                syncSubChartsByIndex(visibleStart + localIndex);
+            });
+            macdDiv?.addEventListener('mouseleave', clearSyncedHover);
+        });
+
+        const foreignDiv = document.getElementById('foreign-chart');
+        if (foreignDiv) {
+            if (isKoreanStock) {
+                foreignDiv.style.display = '';
+                foreignChartInstance = new ApexCharts(foreignDiv, foreignOptions);
+                Promise.resolve(foreignChartInstance.render()).then(() => {
+                    foreignDiv?.addEventListener('mousemove', (ev) => {
+                        const rect = foreignDiv.getBoundingClientRect();
+                        const plotMetrics = getPlotMetrics(foreignDiv);
+                        const ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left - plotMetrics.left) / plotMetrics.width));
+                        const localIndex = Math.round(ratio * Math.max(0, visibleOhlcData.length - 1));
+                        syncSubChartsByIndex(visibleStart + localIndex);
+                    });
+                    foreignDiv?.addEventListener('mouseleave', clearSyncedHover);
+                });
+            } else {
+                foreignDiv.style.display = 'none';
+            }
+        }
+
+        chartDiv.onmousedown = (ev) => {
+            candleDragState = {
+                startX: ev.clientX,
+                startOffset: candleWindowOffset,
+                visibleCount: visibleOhlcData.length,
+                totalCount: sourceOhlcData.length
+            };
+        };
+        window.onmouseup = () => {
+            candleDragState = null;
+        };
+        window.onmousemove = (ev) => {
+            if (!candleDragState) return;
+            const dx = ev.clientX - candleDragState.startX;
+            const pxPerBar = Math.max(4, chartDiv.clientWidth / Math.max(1, candleDragState.visibleCount));
+            const movedBars = Math.round(dx / pxPerBar);
+            const maxOffset = Math.max(0, candleDragState.totalCount - daysToDisplay);
+            const nextOffset = Math.max(0, Math.min(maxOffset, candleDragState.startOffset - movedBars));
+            if (nextOffset !== candleWindowOffset) {
+                candleWindowOffset = nextOffset;
+                renderCandleChart();
+            }
+        };
+    }
+
+    // 10. Render Peer Badges
+    function renderPeersList(peers, benchmark = null) {
+        peersListContainer.innerHTML = '';
+        const benchmarkName = benchmark?.name || sectorBenchmarkLabel || '업종지수';
+        const benchmarkCode = benchmark?.code || benchmark?.symbol || '';
+        const benchmarkSource = benchmark?.source || '업종 벤치마크';
+
+        if (sectorBenchmarkDesc) {
+            const codeText = benchmarkCode ? ` (${benchmarkCode})` : '';
+            sectorBenchmarkDesc.textContent = `${benchmarkName}${codeText}를 해당 종목의 업종 평균(업종지수) 비교 기준으로 사용합니다. 예: 삼성전자는 KRX 전기전자 업종 기준으로 비교합니다. 기준 출처: ${benchmarkSource}.`;
+        }
+
+        const benchmarkSpan = document.createElement('span');
+        benchmarkSpan.className = 'peer-tag benchmark-tag';
+        benchmarkSpan.textContent = benchmarkCode ? `${benchmarkName} (${benchmarkCode})` : benchmarkName;
+        peersListContainer.appendChild(benchmarkSpan);
+
+        return;
+    }
+
+    // 11. Chart Period Selectors Click Event
+    periodButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            periodButtons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            const months = parseInt(btn.getAttribute('data-months'));
+            renderChart(months);
+        });
+    });
+
+    // 11B. Candlestick Chart Duration Control listeners
+    const candleDaysInput = document.getElementById('candle-days-input');
+    const updateCandleBtn = document.getElementById('update-candle-btn');
+    const timeframeButtons = document.querySelectorAll('.timeframe-btn');
+    if (updateCandleBtn) {
+        updateCandleBtn.addEventListener('click', () => {
+            candleWindowOffset = 0;
+            renderCandleChart();
+        });
+    }
+    if (candleDaysInput) {
+        candleDaysInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                candleWindowOffset = 0;
+                renderCandleChart();
+            }
+        });
+    }
+
+    timeframeButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const tf = btn.getAttribute('data-timeframe') || 'day';
+            candleTimeframe = tf;
+            candleWindowOffset = 0;
+            timeframeButtons.forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderCandleChart();
+        });
+    });
+
+    // 12. Render Interactive Comparative Chart
+    function renderChart(months) {
+        if (!rawChartData || !rawChartData.dates.length) return;
+        
+        // A. Calculate Slicing Indexes
+        let tradingDays = 250; // default to 1 year
+        if (months === 6) tradingDays = 120;
+        else if (months === 3) tradingDays = 60;
+        else if (months === 1) tradingDays = 20;
+        
+        const len = rawChartData.dates.length;
+        const startIdx = Math.max(0, len - tradingDays);
+        
+        const datesSlice = rawChartData.dates.slice(startIdx);
+        const stockSlice = rawChartData.stock.slice(startIdx);
+        const marketSlice = rawChartData.market.slice(startIdx);
+        const sectorSlice = rawChartData.sector.slice(startIdx);
+        
+        // B. Re-normalize to 100% on the start date of this sub-period
+        const stockBase = stockSlice[0];
+        const marketBase = marketSlice[0];
+        const sectorBase = sectorSlice[0];
+        
+        const normStock = stockSlice.map(v => stockBase ? (v / stockBase) * 100 : 100);
+        const normMarket = marketSlice.map(v => marketBase ? (v / marketBase) * 100 : 100);
+        const normSector = sectorSlice.map(v => sectorBase ? (v / sectorBase) * 100 : 100);
+        
+        // C. Clean and recreate Chart canvas
+        const ctx = document.getElementById('relative-chart').getContext('2d');
+        
+        if (relativeChart) {
+            relativeChart.destroy();
+        }
+        
+        // D. Create beautiful gradient objects for lines
+        // E. Chart.js Config
+        relativeChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: datesSlice,
+                datasets: [
+                    {
+                        label: '종목 (Stock)',
+                        data: normStock,
+                        borderColor: '#111827',
+                        borderWidth: 2.5,
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.15,
+                        pointRadius: 0,
+                        pointHoverRadius: 5,
+                        pointHoverBackgroundColor: '#111827',
+                        pointHoverBorderColor: '#ffffff',
+                        pointHoverBorderWidth: 1.5
+                    },
+                    {
+                        label: `지수 (${benchmarkSymbol})`,
+                        data: normMarket,
+                        borderColor: '#dc2626',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.1,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                        pointHoverBackgroundColor: '#dc2626',
+                        pointHoverBorderColor: '#ffffff',
+                        pointHoverBorderWidth: 1.5
+                    },
+                    {
+                        label: `업종지수 (${sectorBenchmarkLabel})`,
+                        data: normSector,
+                        borderColor: '#2563eb',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.15,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                        pointHoverBackgroundColor: '#2563eb',
+                        pointHoverBorderColor: '#ffffff',
+                        pointHoverBorderWidth: 1.5
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            color: '#475569',
+                            font: {
+                                family: 'Inter',
+                                size: 11
+                            },
+                            boxWidth: 12,
+                            boxHeight: 6,
+                            padding: 15
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(255, 255, 255, 0.98)',
+                        titleColor: '#0f172a',
+                        bodyColor: '#334155',
+                        borderColor: 'rgba(0, 0, 0, 0.08)',
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 8,
+                        titleFont: {
+                            family: 'Outfit',
+                            weight: '600'
+                        },
+                        bodyFont: {
+                            family: 'Inter'
+                        },
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += `${context.parsed.y.toFixed(2)}%`;
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.04)',
+                            drawBorder: false
+                        },
+                        ticks: {
+                            color: '#64748b',
+                            font: {
+                                size: 10,
+                                family: 'Outfit'
+                            },
+                            maxRotation: 0,
+                            autoSkip: true,
+                            autoSkipPadding: 40
+                        }
+                    },
+                    y: {
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.04)',
+                            drawBorder: false
+                        },
+                        ticks: {
+                            color: '#64748b',
+                            font: {
+                                size: 10,
+                                family: 'Outfit'
+                            },
+                            callback: function(value) {
+                                return value.toFixed(0) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+});
