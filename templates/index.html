@@ -164,6 +164,26 @@
                     <div id="volume-chart" style="min-height: 224px;"></div>
                     <div id="macd-chart" style="min-height: 314px;"></div>
                     <div id="foreign-chart" style="min-height: 180px;"></div>
+                    <div class="ichimoku-panel">
+                        <div class="ichimoku-controls">
+                            <div class="candle-timeframe-switch" id="ichimoku-timeframe-switch">
+                                <button class="timeframe-btn ichimoku-timeframe-btn active" data-timeframe="day">일봉</button>
+                                <button class="timeframe-btn ichimoku-timeframe-btn" data-timeframe="week">주봉</button>
+                                <button class="timeframe-btn ichimoku-timeframe-btn" data-timeframe="month">월봉</button>
+                            </div>
+                            <label for="ichimoku-days-input" class="control-label">일목 조회 기간</label>
+                            <input type="number" id="ichimoku-days-input" min="60" max="500" value="200" class="days-input" />
+                            <button id="update-ichimoku-btn" class="btn-primary-sm">적용</button>
+                        </div>
+                        <div class="ichimoku-legend">
+                            <span class="ichimoku-chip tenkan">전환선</span>
+                            <span class="ichimoku-chip kijun">기준선</span>
+                            <span class="ichimoku-chip chikou">후행선</span>
+                            <span class="ichimoku-chip span-a">선행1</span>
+                            <span class="ichimoku-chip span-b">선행2</span>
+                        </div>
+                        <div id="ichimoku-chart" style="min-height: 430px;"></div>
+                    </div>
                 </div>
                 <p class="chart-footnote">* 빨간색 양봉은 가격 상승, 파란색 음봉은 가격 하락을 나타냅니다. 거래량 막대는 전일 대비 거래량 증가 시 빨간색, 감소 시 파란색으로 표시됩니다. 이동평균선과 거래량, MACD(12, 26, 9) 차트가 상하 연동되어 함께 드래그/스크롤됩니다.</p>
             </section>

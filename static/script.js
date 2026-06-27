@@ -55,6 +55,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let volumeChartInstance = null; // ApexCharts volume instance holder
     let macdChartInstance = null;   // ApexCharts MACD instance holder
     let foreignChartInstance = null;
+    let ichimokuChartInstance = null;
+    let ichimokuTimeframe = 'day';
     let candleDragState = null;
     
     // Recent Searches Storage Engine
@@ -462,6 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // E. Render Daily Candlestick Chart
         renderCandleChart();
+        renderIchimokuChart();
         
         // Reset period buttons active state
         periodButtons.forEach(btn => {
@@ -674,6 +677,182 @@ document.addEventListener('DOMContentLoaded', () => {
         return Array.from(grouped.values()).sort((a, b) => a.date.localeCompare(b.date));
     }
 
+    function formatChartDate(str) {
+        if (!str) return str;
+        const m = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+        return m ? `${m[1]}.${m[2]}.${m[3]}` : str;
+    }
+
+    function nextIchimokuDate(lastDate, step, timeframe) {
+        const y = lastDate.slice(0, 4);
+        const m = lastDate.slice(4, 6);
+        const d = lastDate.slice(6, 8);
+        const date = new Date(`${y}-${m}-${d}T00:00:00`);
+        if (timeframe === 'week') {
+            date.setDate(date.getDate() + (step * 7));
+        } else if (timeframe === 'month') {
+            date.setMonth(date.getMonth() + step);
+        } else {
+            date.setDate(date.getDate() + step);
+        }
+        return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+    }
+
+    function calculateIchimoku(ohlcList) {
+        const len = ohlcList.length;
+        const forward = 26;
+        const totalLen = len + forward;
+        const tenkan = Array(totalLen).fill(null);
+        const kijun = Array(totalLen).fill(null);
+        const chikou = Array(totalLen).fill(null);
+        const spanA = Array(totalLen).fill(null);
+        const spanB = Array(totalLen).fill(null);
+
+        const midpoint = (idx, period) => {
+            if (idx < period - 1) return null;
+            let high = -Infinity;
+            let low = Infinity;
+            for (let i = idx - period + 1; i <= idx; i++) {
+                high = Math.max(high, ohlcList[i].high);
+                low = Math.min(low, ohlcList[i].low);
+            }
+            return parseFloat(((high + low) / 2).toFixed(2));
+        };
+
+        for (let i = 0; i < len; i++) {
+            tenkan[i] = midpoint(i, 9);
+            kijun[i] = midpoint(i, 26);
+            const spanIdx = i + forward;
+            if (spanIdx < totalLen && tenkan[i] !== null && kijun[i] !== null) {
+                spanA[spanIdx] = parseFloat(((tenkan[i] + kijun[i]) / 2).toFixed(2));
+            }
+            if (spanIdx < totalLen) {
+                spanB[spanIdx] = midpoint(i, 52);
+            }
+            const chikouIdx = i - forward;
+            if (chikouIdx >= 0) {
+                chikou[chikouIdx] = ohlcList[i].close;
+            }
+        }
+
+        return { tenkan, kijun, chikou, spanA, spanB, forward, totalLen };
+    }
+
+    function renderIchimokuChart() {
+        const target = document.getElementById('ichimoku-chart');
+        if (!target) return;
+        if (ichimokuChartInstance) {
+            ichimokuChartInstance.destroy();
+            ichimokuChartInstance = null;
+        }
+        if (!rawOhlcData || rawOhlcData.length === 0) {
+            target.innerHTML = '<div style="padding: 3rem; text-align: center; color: var(--text-secondary);">일목균형표 데이터가 없습니다.</div>';
+            return;
+        }
+
+        let daysToDisplay = 200;
+        const daysInput = document.getElementById('ichimoku-days-input');
+        if (daysInput) {
+            const parsedVal = parseInt(daysInput.value);
+            if (parsedVal >= 60 && parsedVal <= 500) {
+                daysToDisplay = parsedVal;
+            }
+        }
+
+        const source = aggregateOHLC(rawOhlcData, ichimokuTimeframe);
+        const ichi = calculateIchimoku(source);
+        const start = Math.max(0, source.length - daysToDisplay);
+        const end = source.length + ichi.forward - 1;
+        const indexes = [];
+        for (let i = start; i <= end; i++) indexes.push(i);
+
+        const getX = (idx) => {
+            if (idx < source.length) return formatChartDate(source[idx].date);
+            return formatChartDate(nextIchimokuDate(source[source.length - 1].date, idx - source.length + 1, ichimokuTimeframe));
+        };
+        const point = (arr, idx) => ({ x: getX(idx), y: arr[idx] == null ? null : arr[idx] });
+        const candleData = source.slice(start).map((item) => ({
+            x: formatChartDate(item.date),
+            y: [item.open, item.high, item.low, item.close]
+        }));
+        const cloudData = indexes.map((idx) => {
+            const a = ichi.spanA[idx];
+            const b = ichi.spanB[idx];
+            return {
+                x: getX(idx),
+                y: Number.isFinite(a) && Number.isFinite(b) ? [Math.min(a, b), Math.max(a, b)] : null
+            };
+        });
+
+        const options = {
+            series: [
+                { name: '구름', type: 'rangeArea', data: cloudData },
+                { name: '캔들스틱', type: 'candlestick', data: candleData },
+                { name: '전환선', type: 'line', data: indexes.map((idx) => point(ichi.tenkan, idx)) },
+                { name: '기준선', type: 'line', data: indexes.map((idx) => point(ichi.kijun, idx)) },
+                { name: '후행선', type: 'line', data: indexes.map((idx) => point(ichi.chikou, idx)) },
+                { name: '선행1', type: 'line', data: indexes.map((idx) => point(ichi.spanA, idx)) },
+                { name: '선행2', type: 'line', data: indexes.map((idx) => point(ichi.spanB, idx)) }
+            ],
+            chart: {
+                id: 'ichimoku-chart',
+                height: 430,
+                type: 'line',
+                animations: { enabled: false },
+                toolbar: { show: false },
+                zoom: { enabled: true, type: 'x', allowMouseWheelZoom: false },
+                fontFamily: 'Outfit, Inter, sans-serif'
+            },
+            plotOptions: {
+                candlestick: {
+                    colors: { upward: '#dc2626', downward: '#2563eb' },
+                    wick: { useFillColor: true }
+                }
+            },
+            stroke: {
+                width: [0, 1, 1.8, 1.8, 2.2, 3, 3],
+                curve: 'smooth'
+            },
+            fill: {
+                opacity: [0.28, 1, 1, 1, 1, 1, 1],
+                colors: ['#fb7185']
+            },
+            colors: ['#fb7185', '#808080', '#06b6d4', '#94a3b8', '#111827', '#fb7185', '#3b82f6'],
+            dataLabels: { enabled: false },
+            xaxis: {
+                type: 'category',
+                tickAmount: 10,
+                labels: {
+                    style: { colors: '#64748b', fontSize: '11px', fontWeight: 500 },
+                    rotate: -45,
+                    rotateAlways: false
+                },
+                crosshairs: {
+                    show: true,
+                    stroke: { color: '#0f172a', width: 1, dashArray: 4 }
+                }
+            },
+            yaxis: {
+                opposite: true,
+                labels: {
+                    minWidth: 80,
+                    formatter: (val) => val == null ? '' : val.toFixed(2),
+                    style: { colors: '#64748b', fontSize: '11px', fontWeight: 500 }
+                }
+            },
+            tooltip: {
+                shared: true,
+                intersect: false
+            },
+            legend: {
+                show: false
+            }
+        };
+
+        ichimokuChartInstance = new ApexCharts(target, options);
+        ichimokuChartInstance.render();
+    }
+
     // 9C. Render Daily Candlestick and Moving Averages
     function renderCandleChart() {
         const chartDiv = document.getElementById('candle-chart');
@@ -881,7 +1060,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        const buildMacdBackgroundBands = () => {
+        const buildMacdSignBands = () => {
             const bands = [];
             let activeSign = null;
             let startIndex = null;
@@ -889,6 +1068,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const pushBand = (fromIndex, toIndex, sign) => {
                 if (fromIndex == null || toIndex == null || toIndex < fromIndex || !sign) return;
                 bands.push({
+                    fromIndex,
+                    toIndex,
+                    sign,
                     x: formatDate(sourceOhlcData[fromIndex].date),
                     x2: formatDate(sourceOhlcData[toIndex].date),
                     fillColor: sign === 'positive' ? '#fecaca' : '#bfdbfe',
@@ -902,7 +1084,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             };
 
-            for (let i = visibleStart; i < macdData.macd.length; i++) {
+            for (let i = visibleStart; i <= visibleEnd; i++) {
                 const value = macdData.macd[i];
                 if (value == null) continue;
                 const sign = value >= 0 ? 'positive' : 'negative';
@@ -914,17 +1096,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 if (sign !== activeSign) {
-                    pushBand(startIndex, i, activeSign);
+                    pushBand(startIndex, i - 1, activeSign);
                     activeSign = sign;
                     startIndex = i;
                 }
             }
 
-            pushBand(startIndex, macdData.macd.length - 1, activeSign);
+            pushBand(startIndex, visibleEnd, activeSign);
             return bands;
         };
 
-        const macdBackgroundBands = buildMacdBackgroundBands();
+        const macdBackgroundBands = buildMacdSignBands();
         const candleBackgroundBands = macdBackgroundBands.map((band) => ({
             ...band,
             opacity: 0.32,
@@ -1012,6 +1194,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderSyncedHoverOverlay('candle-chart', dataPointIndex);
             renderSyncedHoverOverlay('volume-chart', dataPointIndex);
             renderSyncedHoverOverlay('macd-chart', dataPointIndex);
+            renderSyncedHoverOverlay('foreign-chart', dataPointIndex);
         };
 
         const clearSyncedHover = () => {
@@ -1020,6 +1203,7 @@ document.addEventListener('DOMContentLoaded', () => {
             clearSyncedHoverOverlay('candle-chart');
             clearSyncedHoverOverlay('volume-chart');
             clearSyncedHoverOverlay('macd-chart');
+            clearSyncedHoverOverlay('foreign-chart');
         };
 
         const indexFromMouseEvent = (event) => {
@@ -1102,15 +1286,16 @@ document.addEventListener('DOMContentLoaded', () => {
             chartDiv.appendChild(overlay);
         };
 
-        const renderCandleBackgroundOverlay = () => {
-            chartDiv.style.position = 'relative';
-            const oldBg = chartDiv.querySelector('.candle-bg-overlay');
+        const renderMacdSignBackgroundOverlay = (target, className) => {
+            if (!target) return;
+            target.style.position = 'relative';
+            const oldBg = target.querySelector(`.${className}`);
             if (oldBg) oldBg.remove();
             if (!macdBackgroundBands.length) return;
 
             const overlay = document.createElement('div');
-            overlay.className = 'candle-bg-overlay';
-            const plotMetrics = getPlotMetrics(chartDiv);
+            overlay.className = className;
+            const plotMetrics = getPlotMetrics(target);
             Object.assign(overlay.style, {
                 position: 'absolute',
                 top: '34px',
@@ -1122,18 +1307,12 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             const visibleSpan = Math.max(1, visibleEnd - visibleStart);
-            const dateToIndex = {};
-            sourceOhlcData.forEach((d, i) => { dateToIndex[formatDate(d.date)] = i; });
-
             macdBackgroundBands.forEach((band) => {
-                const fromIdx = dateToIndex[band.x];
-                const toIdx = dateToIndex[band.x2];
-                if (fromIdx == null || toIdx == null) return;
-                const start = Math.max(visibleStart, Math.min(fromIdx, toIdx));
-                const end = Math.min(visibleEnd, Math.max(fromIdx, toIdx));
+                const start = Math.max(visibleStart, band.fromIndex);
+                const end = Math.min(visibleEnd, band.toIndex);
                 if (end < start) return;
                 const leftPct = ((start - visibleStart) / visibleSpan) * 100;
-                const rightPct = ((end - visibleStart) / visibleSpan) * 100;
+                const rightPct = ((end - visibleStart + 1) / visibleSpan) * 100;
                 const segment = document.createElement('div');
                 Object.assign(segment.style, {
                     position: 'absolute',
@@ -1141,14 +1320,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     width: `${Math.max(0.8, rightPct - leftPct)}%`,
                     top: '0',
                     bottom: '0',
-                    background: band.fillColor === '#fecaca'
+                    background: band.sign === 'positive'
                         ? 'rgba(254, 202, 202, 0.38)'
                         : 'rgba(191, 219, 254, 0.38)'
                 });
                 overlay.appendChild(segment);
             });
 
-            chartDiv.appendChild(overlay);
+            target.appendChild(overlay);
+        };
+
+        const renderCandleBackgroundOverlay = () => {
+            renderMacdSignBackgroundOverlay(chartDiv, 'candle-bg-overlay');
+        };
+
+        const renderMacdBackgroundOverlay = () => {
+            renderMacdSignBackgroundOverlay(document.getElementById('macd-chart'), 'macd-bg-overlay');
         };
 
         // 1. Candlestick Chart Options
@@ -1619,6 +1806,8 @@ document.addEventListener('DOMContentLoaded', () => {
         macdChartInstance = new ApexCharts(document.getElementById('macd-chart'), macdOptions);
         Promise.resolve(macdChartInstance.render()).then(() => {
             const macdDiv = document.getElementById('macd-chart');
+            window.setTimeout(renderMacdBackgroundOverlay, 0);
+            window.setTimeout(renderMacdBackgroundOverlay, 250);
             macdDiv?.addEventListener('mousemove', (ev) => {
                 const rect = macdDiv.getBoundingClientRect();
                 const plotMetrics = getPlotMetrics(macdDiv);
@@ -1708,7 +1897,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // 11B. Candlestick Chart Duration Control listeners
     const candleDaysInput = document.getElementById('candle-days-input');
     const updateCandleBtn = document.getElementById('update-candle-btn');
-    const timeframeButtons = document.querySelectorAll('.timeframe-btn');
+    const timeframeButtons = document.querySelectorAll('#candle-timeframe-switch .timeframe-btn');
+    const ichimokuDaysInput = document.getElementById('ichimoku-days-input');
+    const updateIchimokuBtn = document.getElementById('update-ichimoku-btn');
+    const ichimokuTimeframeButtons = document.querySelectorAll('.ichimoku-timeframe-btn');
     if (updateCandleBtn) {
         updateCandleBtn.addEventListener('click', () => {
             candleWindowOffset = 0;
@@ -1732,6 +1924,27 @@ document.addEventListener('DOMContentLoaded', () => {
             timeframeButtons.forEach((b) => b.classList.remove('active'));
             btn.classList.add('active');
             renderCandleChart();
+        });
+    });
+
+    if (updateIchimokuBtn) {
+        updateIchimokuBtn.addEventListener('click', () => {
+            renderIchimokuChart();
+        });
+    }
+    if (ichimokuDaysInput) {
+        ichimokuDaysInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                renderIchimokuChart();
+            }
+        });
+    }
+    ichimokuTimeframeButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            ichimokuTimeframe = btn.getAttribute('data-timeframe') || 'day';
+            ichimokuTimeframeButtons.forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderIchimokuChart();
         });
     });
 

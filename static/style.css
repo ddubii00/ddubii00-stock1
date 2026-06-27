@@ -1060,3 +1060,44 @@ tbody tr.underperform-row:hover td {
     flex-direction: column;
     gap: 1px;
 }
+
+.ichimoku-panel {
+    margin-top: 0.9rem;
+    border-top: 1px solid rgba(100, 116, 139, 0.16);
+    padding-top: 0.85rem;
+}
+
+.ichimoku-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-bottom: 0.55rem;
+}
+
+.ichimoku-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.35rem;
+}
+
+.ichimoku-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 0.65rem;
+    border-radius: 999px;
+    border: 1px solid rgba(100, 116, 139, 0.35);
+    background: rgba(255, 255, 255, 0.72);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.ichimoku-chip.tenkan { border-color: rgba(6, 182, 212, 0.65); color: #0891b2; }
+.ichimoku-chip.kijun { border-color: rgba(100, 116, 139, 0.65); color: #475569; }
+.ichimoku-chip.chikou { border-color: rgba(15, 23, 42, 0.75); color: #111827; }
+.ichimoku-chip.span-a { border-color: rgba(244, 63, 94, 0.65); color: #e11d48; }
+.ichimoku-chip.span-b { border-color: rgba(59, 130, 246, 0.65); color: #2563eb; }
