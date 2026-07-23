@@ -775,18 +775,28 @@ document.addEventListener('DOMContentLoaded', () => {
             x: formatChartDate(item.date),
             y: [item.open, item.high, item.low, item.close]
         }));
-        const cloudData = indexes.map((idx) => {
+        const buildCloudPoint = (idx, sign) => {
             const a = ichi.spanA[idx];
             const b = ichi.spanB[idx];
+            if (!Number.isFinite(a) || !Number.isFinite(b)) {
+                return { x: getX(idx), y: null };
+            }
+            const isPositiveCloud = a >= b;
+            if ((sign === 'positive' && !isPositiveCloud) || (sign === 'negative' && isPositiveCloud)) {
+                return { x: getX(idx), y: null };
+            }
             return {
                 x: getX(idx),
-                y: Number.isFinite(a) && Number.isFinite(b) ? [Math.min(a, b), Math.max(a, b)] : null
+                y: [Math.min(a, b), Math.max(a, b)]
             };
-        });
+        };
+        const positiveCloudData = indexes.map((idx) => buildCloudPoint(idx, 'positive'));
+        const negativeCloudData = indexes.map((idx) => buildCloudPoint(idx, 'negative'));
 
         const options = {
             series: [
-                { name: '구름', type: 'rangeArea', data: cloudData },
+                { name: '양운', type: 'rangeArea', data: positiveCloudData },
+                { name: '음운', type: 'rangeArea', data: negativeCloudData },
                 { name: '캔들스틱', type: 'candlestick', data: candleData },
                 { name: '전환선', type: 'line', data: indexes.map((idx) => point(ichi.tenkan, idx)) },
                 { name: '기준선', type: 'line', data: indexes.map((idx) => point(ichi.kijun, idx)) },
@@ -810,14 +820,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             },
             stroke: {
-                width: [0, 1, 1.8, 1.8, 2.2, 3, 3],
+                width: [0, 0, 1, 1.8, 1.8, 2.2, 3, 3],
                 curve: 'smooth'
             },
             fill: {
-                opacity: [0.28, 1, 1, 1, 1, 1, 1],
-                colors: ['#fb7185']
+                opacity: [0.28, 0.28, 1, 1, 1, 1, 1, 1],
+                colors: ['#fb7185', '#60a5fa']
             },
-            colors: ['#fb7185', '#808080', '#06b6d4', '#94a3b8', '#111827', '#fb7185', '#3b82f6'],
+            colors: ['#fb7185', '#60a5fa', '#808080', '#06b6d4', '#94a3b8', '#111827', '#fb7185', '#3b82f6'],
             dataLabels: { enabled: false },
             xaxis: {
                 type: 'category',
