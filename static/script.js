@@ -57,6 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let foreignChartInstance = null;
     let ichimokuChartInstance = null;
     let ichimokuTimeframe = 'day';
+    const ichimokuHiddenSeries = new Set();
     let candleDragState = null;
     
     // Recent Searches Storage Engine
@@ -738,6 +739,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return { tenkan, kijun, chikou, spanA, spanB, forward, totalLen };
     }
 
+    function updateIchimokuLegendState() {
+        document.querySelectorAll('.ichimoku-chip[data-series]').forEach((chip) => {
+            const seriesName = chip.getAttribute('data-series');
+            const hidden = ichimokuHiddenSeries.has(seriesName);
+            chip.classList.toggle('is-hidden', hidden);
+            chip.setAttribute('aria-pressed', hidden ? 'false' : 'true');
+            chip.setAttribute('title', hidden ? `${seriesName} 보이기` : `${seriesName} 숨기기`);
+        });
+    }
+
     function renderIchimokuChart() {
         const target = document.getElementById('ichimoku-chart');
         if (!target) return;
@@ -860,7 +871,12 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         ichimokuChartInstance = new ApexCharts(target, options);
-        ichimokuChartInstance.render();
+        Promise.resolve(ichimokuChartInstance.render()).then(() => {
+            ichimokuHiddenSeries.forEach((seriesName) => {
+                ichimokuChartInstance.hideSeries(seriesName);
+            });
+            updateIchimokuLegendState();
+        });
     }
 
     // 9C. Render Daily Candlestick and Moving Averages
@@ -1911,6 +1927,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const ichimokuDaysInput = document.getElementById('ichimoku-days-input');
     const updateIchimokuBtn = document.getElementById('update-ichimoku-btn');
     const ichimokuTimeframeButtons = document.querySelectorAll('.ichimoku-timeframe-btn');
+    const ichimokuLegendButtons = document.querySelectorAll('.ichimoku-chip[data-series]');
     if (updateCandleBtn) {
         updateCandleBtn.addEventListener('click', () => {
             candleWindowOffset = 0;
@@ -1957,6 +1974,21 @@ document.addEventListener('DOMContentLoaded', () => {
             renderIchimokuChart();
         });
     });
+    ichimokuLegendButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const seriesName = btn.getAttribute('data-series');
+            if (!seriesName) return;
+            if (ichimokuHiddenSeries.has(seriesName)) {
+                ichimokuHiddenSeries.delete(seriesName);
+                if (ichimokuChartInstance) ichimokuChartInstance.showSeries(seriesName);
+            } else {
+                ichimokuHiddenSeries.add(seriesName);
+                if (ichimokuChartInstance) ichimokuChartInstance.hideSeries(seriesName);
+            }
+            updateIchimokuLegendState();
+        });
+    });
+    updateIchimokuLegendState();
 
     // 12. Render Interactive Comparative Chart
     function renderChart(months) {

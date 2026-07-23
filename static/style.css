@@ -1094,6 +1094,21 @@ tbody tr.underperform-row:hover td {
     color: var(--text-secondary);
     font-size: 0.78rem;
     font-weight: 800;
+    cursor: pointer;
+    transition: opacity 0.16s ease, background 0.16s ease, transform 0.16s ease;
+    appearance: none;
+    font-family: inherit;
+}
+
+.ichimoku-chip:hover {
+    background: rgba(255, 255, 255, 0.92);
+    transform: translateY(-1px);
+}
+
+.ichimoku-chip.is-hidden {
+    opacity: 0.36;
+    background: rgba(241, 245, 249, 0.72);
+    text-decoration: line-through;
 }
 
 .ichimoku-chip.tenkan { border-color: rgba(6, 182, 212, 0.65); color: #0891b2; }
