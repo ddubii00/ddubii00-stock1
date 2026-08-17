@@ -1332,13 +1332,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 zIndex: '1'
             });
 
-            const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+            const visibleCount = Math.max(1, visibleEnd - visibleStart + 1);
             macdBackgroundBands.forEach((band) => {
                 const start = Math.max(visibleStart, band.fromIndex);
                 const end = Math.min(visibleEnd, band.toIndex);
                 if (end < start) return;
-                const leftPct = ((start - visibleStart) / visibleSpan) * 100;
-                const rightPct = ((end - visibleStart + 1) / visibleSpan) * 100;
+                const rawLeftPct = ((start - visibleStart) / visibleCount) * 100;
+                const rawRightPct = ((end - visibleStart + 1) / visibleCount) * 100;
+                const leftPct = Math.max(0, rawLeftPct - 0.12);
+                const rightPct = Math.min(100, rawRightPct + 0.12);
                 const segment = document.createElement('div');
                 Object.assign(segment.style, {
                     position: 'absolute',
@@ -1660,7 +1662,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             ],
             annotations: {
-                xaxis: macdBackgroundBands.map((band) => ({ ...band })),
+                xaxis: [],
                 yaxis: macdZeroLine,
                 points: macdCrossAnnotations
             },
