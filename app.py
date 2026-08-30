@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
+from signal_engine import analyze_trade_signal
+
 app = Flask(__name__)
 
 # Common Korean stock nicknames
@@ -42,6 +44,65 @@ def load_stocks_db():
         return []
 
 stocks_db = load_stocks_db()
+
+
+def get_signal_history(code):
+    if code.isdigit() and len(code) == 6:
+        return get_price_history(code, 500)
+    return fetch_yahoo_history(code)
+
+
+def _telegram_configured():
+    return bool(os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'))
+
+
+def send_telegram_message(message):
+    token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+    chat_id = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
+    if not token or not chat_id:
+        return {
+            'sent': False,
+            'configured': False,
+            'message': 'TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID 환경변수를 설정해 주세요.'
+        }
+
+    try:
+        response = requests.post(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            json={'chat_id': chat_id, 'text': message},
+            timeout=8,
+        )
+        payload = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+        if response.ok and payload.get('ok'):
+            return {'sent': True, 'configured': True, 'message': '텔레그램으로 전송했습니다.'}
+        description = payload.get('description') or f'HTTP {response.status_code}'
+        return {'sent': False, 'configured': True, 'message': f'텔레그램 전송 실패: {description}'}
+    except Exception as error:
+        return {'sent': False, 'configured': True, 'message': f'텔레그램 전송 실패: {error}'}
+
+
+def format_portfolio_signal_message(results):
+    action_labels = {
+        'PARTIAL_SELL': '부분매도',
+        'PARTIAL_BUY': '부분매수',
+        'HOLD': '관망',
+    }
+    lines = ['[CORE 보유종목 부분매매 신호]']
+    for item in results:
+        if item.get('error'):
+            lines.append(f"- {item.get('name') or item.get('code')}: 분석 오류 ({item['error']})")
+            continue
+        signal = item['signal']
+        action = action_labels.get(signal['action'], signal['action'])
+        quantity_text = f" {signal['recommended_quantity']}주" if signal['recommended_quantity'] else ''
+        lines.append(
+            f"- {item['name']} ({item['code']}): {action}{quantity_text} "
+            f"[{signal['percentage']:.1f}% / {signal['track'].replace('_', ' ')}]"
+        )
+        for trigger in signal.get('signals', [])[:4]:
+            lines.append(f"  · {trigger['group']}군 {trigger['name']} ({trigger['weight']}%)")
+    lines.append('※ 규칙 기반 참고 신호이며 주문은 자동 실행되지 않습니다.')
+    return '\n'.join(lines)
 
 # --- US STOCKS SUPPORT CONSTANTS & HELPER FUNCTIONS ---
 SECTOR_ETF_MAP = {
@@ -665,6 +726,59 @@ def api_search():
                 
     return jsonify(results)
 
+
+@app.route('/api/portfolio-signals', methods=['POST'])
+def api_portfolio_signals():
+    payload = request.get_json(silent=True) or {}
+    holdings = payload.get('holdings') or []
+    notify = bool(payload.get('notify'))
+    if not isinstance(holdings, list) or not holdings:
+        return jsonify({'error': 'CORE 보유종목을 한 개 이상 입력해 주세요.'}), 400
+    if len(holdings) > 10:
+        return jsonify({'error': 'CORE 보유종목은 최대 10개까지 점검할 수 있습니다.'}), 400
+
+    normalized = []
+    for item in holdings:
+        code = str(item.get('code', '')).strip().upper()
+        name = str(item.get('name', '')).strip() or code
+        if not re.fullmatch(r'[A-Z0-9.^-]{1,20}', code):
+            return jsonify({'error': f'올바르지 않은 종목 코드입니다: {code}'}), 400
+        try:
+            total_quantity = int(item.get('quantity', 0))
+        except (TypeError, ValueError):
+            return jsonify({'error': f'{name}의 전체 보유수량을 확인해 주세요.'}), 400
+        if total_quantity <= 0 or total_quantity > 100000000:
+            return jsonify({'error': f'{name}의 전체 보유수량은 1 이상이어야 합니다.'}), 400
+        normalized.append({'code': code, 'name': name, 'quantity': total_quantity})
+
+    results_by_code = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(normalized))) as executor:
+        futures = {
+            executor.submit(get_signal_history, item['code']): item
+            for item in normalized
+        }
+        for future in as_completed(futures):
+            item = futures[future]
+            try:
+                history = future.result()
+                if not history:
+                    raise ValueError('주가 이력을 불러오지 못했습니다.')
+                signal = analyze_trade_signal(history, item['quantity'])
+                results_by_code[item['code']] = {**item, 'signal': signal}
+            except Exception as error:
+                results_by_code[item['code']] = {**item, 'error': str(error)}
+
+    results = [results_by_code[item['code']] for item in normalized]
+    telegram = {
+        'sent': False,
+        'configured': _telegram_configured(),
+        'message': '텔레그램 전송을 요청하지 않았습니다.'
+    }
+    if notify:
+        telegram = send_telegram_message(format_portfolio_signal_message(results))
+
+    return jsonify({'results': results, 'telegram': telegram})
+
 @app.route('/api/performance')
 def api_performance():
     code = request.args.get('code', '').strip()
@@ -864,6 +978,12 @@ def api_performance():
         chart_market.append({'date': formatted_date, 'value': m_val})
         chart_sector.append({'date': formatted_date, 'value': sec_val})
         
+    try:
+        trade_signal = analyze_trade_signal(stock_history, 0)
+    except Exception as error:
+        print(f"Trade signal calculation failed for {stock.get('code')}: {error}")
+        trade_signal = None
+
     return jsonify({
         'stock': {
             'code': stock['code'],
@@ -883,7 +1003,9 @@ def api_performance():
             'sector': [x['value'] for x in chart_sector]
         },
         'ohlc': stock_history,
-        'foreign_ratio': foreign_ratio
+        'foreign_ratio': foreign_ratio,
+        'trade_signal': trade_signal,
+        'telegram_configured': _telegram_configured()
     })
 
 # Vercel Python runtime entrypoint (looks for 'handler' or 'app')

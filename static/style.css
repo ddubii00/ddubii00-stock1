@@ -165,15 +165,161 @@ body {
     padding: 0 0.6rem;
     width: 100%;
 }
+.watch-controls .holding-quantity-input {
+    width: 132px;
+    flex: 0 0 132px;
+}
+.core-toggle {
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0 0.55rem;
+    border: 1px solid rgba(2, 132, 199, 0.25);
+    border-radius: 6px;
+    color: var(--cyan);
+    font-size: 0.76rem;
+    font-weight: 700;
+    cursor: pointer;
+    background: rgba(2, 132, 199, 0.06);
+}
+.core-toggle input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--cyan);
+}
+.portfolio-signal-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.7rem;
+}
+.btn-signal {
+    min-height: 34px;
+    border: 1px solid #0f766e;
+    border-radius: 6px;
+    padding: 0.42rem 0.75rem;
+    background: #0f766e;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.btn-signal:hover:not(:disabled) {
+    background: #115e59;
+}
+.btn-signal:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.portfolio-signal-status {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+.portfolio-signal-status.success { color: #047857; }
+.portfolio-signal-status.error { color: var(--positive); }
+.holding-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+.holding-badge.core {
+    border-color: rgba(2, 132, 199, 0.35);
+}
+.core-mark {
+    padding: 0.08rem 0.28rem;
+    border-radius: 3px;
+    background: rgba(2, 132, 199, 0.1);
+    color: var(--cyan);
+    font-size: 0.62rem;
+    font-weight: 800;
+}
 .named-remove {
     margin-left: 4px;
     color: #94a3b8;
     font-weight: 700;
 }
+
+.trade-signal-card {
+    border-left: 4px solid #0f766e;
+}
+.trade-signal-header,
+.trade-signal-summary,
+.signal-score-row,
+.signal-trigger {
+    display: flex;
+    align-items: center;
+}
+.trade-signal-header {
+    justify-content: space-between;
+    gap: 1rem;
+}
+.trade-signal-date,
+.trade-signal-note,
+.signal-empty {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+.trade-signal-summary {
+    gap: 1rem;
+    margin: 1rem 0 0.75rem;
+    flex-wrap: wrap;
+}
+.trade-signal-action {
+    min-width: 112px;
+    padding: 0.55rem 0.75rem;
+    border-radius: 6px;
+    text-align: center;
+    background: rgba(71, 85, 105, 0.08);
+    color: var(--text-secondary);
+    font-weight: 800;
+}
+.trade-signal-action.partial-sell {
+    background: var(--negative-bg);
+    color: var(--negative);
+    border: 1px solid var(--negative-border);
+}
+.trade-signal-action.partial-buy {
+    background: var(--positive-bg);
+    color: var(--positive);
+    border: 1px solid var(--positive-border);
+}
+.trade-signal-quantity {
+    color: var(--text-primary);
+    font-weight: 650;
+}
+.signal-score-row {
+    gap: 0.5rem;
+    margin-bottom: 0.65rem;
+}
+.signal-score {
+    padding: 0.28rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+.signal-score.sell { color: var(--negative); background: var(--negative-bg); }
+.signal-score.buy { color: var(--positive); background: var(--positive-bg); }
+.signal-trigger-list {
+    display: grid;
+    gap: 0.4rem;
+}
+.signal-trigger {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 46px;
+    gap: 0.7rem;
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    font-size: 0.82rem;
+}
+.signal-trigger strong { color: #0f766e; }
+.signal-trigger b { text-align: right; color: var(--text-secondary); }
+.trade-signal-note { margin-top: 0.75rem; }
 @media (max-width: 980px) {
     .watch-controls {
         flex-wrap: wrap;
     }
+    .trade-signal-header { align-items: flex-start; }
 }
 
 .logo-accent {

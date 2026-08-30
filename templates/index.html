@@ -57,12 +57,21 @@
                     <input type="text" id="holding-input" placeholder="보유종목명" maxlength="30">
                     <ul id="holding-autocomplete-list" class="autocomplete-dropdown hidden"></ul>
                 </div>
+                <input type="number" id="holding-quantity-input" class="holding-quantity-input" min="1" step="1" placeholder="전체 보유수량">
+                <label class="core-toggle" for="holding-core-input">
+                    <input type="checkbox" id="holding-core-input" checked>
+                    <span>CORE</span>
+                </label>
                 <button id="add-holding-btn" class="btn-primary-sm">보유 추가</button>
                 <div class="watch-input-wrap">
                     <input type="text" id="favorite-input" placeholder="관심종목명" maxlength="30">
                     <ul id="favorite-autocomplete-list" class="autocomplete-dropdown hidden"></ul>
                 </div>
                 <button id="add-favorite-btn" class="btn-primary-sm">관심 추가</button>
+            </div>
+            <div class="portfolio-signal-actions">
+                <button id="check-core-signals-btn" class="btn-signal">CORE 신호 점검·텔레그램</button>
+                <span id="portfolio-signal-status" class="portfolio-signal-status"></span>
             </div>
         </section>
 
@@ -86,6 +95,22 @@
                         <span id="sector-badge" class="stock-badge sector-badge">반도체와반도체장비</span>
                     </div>
                 </div>
+            </section>
+
+            <section id="trade-signal-card" class="trade-signal-card card hidden">
+                <div class="trade-signal-header">
+                    <div>
+                        <h3 class="card-title">CORE 부분매매 신호</h3>
+                        <p id="trade-signal-date" class="trade-signal-date"></p>
+                    </div>
+                    <button id="send-current-signal-btn" class="btn-signal">텔레그램 전송</button>
+                </div>
+                <div class="trade-signal-summary">
+                    <div id="trade-signal-action" class="trade-signal-action">관망</div>
+                    <div id="trade-signal-quantity" class="trade-signal-quantity"></div>
+                </div>
+                <div id="trade-signal-details" class="trade-signal-details"></div>
+                <p id="trade-signal-note" class="trade-signal-note"></p>
             </section>
 
             <!-- Table and Chart Grid -->

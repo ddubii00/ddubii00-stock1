@@ -16,10 +16,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const favoriteList = document.getElementById('favorite-list');
     const holdingInput = document.getElementById('holding-input');
     const holdingAutocompleteList = document.getElementById('holding-autocomplete-list');
+    const holdingQuantityInput = document.getElementById('holding-quantity-input');
+    const holdingCoreInput = document.getElementById('holding-core-input');
     const favoriteInput = document.getElementById('favorite-input');
     const favoriteAutocompleteList = document.getElementById('favorite-autocomplete-list');
     const addHoldingBtn = document.getElementById('add-holding-btn');
     const addFavoriteBtn = document.getElementById('add-favorite-btn');
+    const checkCoreSignalsBtn = document.getElementById('check-core-signals-btn');
+    const portfolioSignalStatus = document.getElementById('portfolio-signal-status');
+    const tradeSignalCard = document.getElementById('trade-signal-card');
+    const tradeSignalDate = document.getElementById('trade-signal-date');
+    const tradeSignalAction = document.getElementById('trade-signal-action');
+    const tradeSignalQuantity = document.getElementById('trade-signal-quantity');
+    const tradeSignalDetails = document.getElementById('trade-signal-details');
+    const tradeSignalNote = document.getElementById('trade-signal-note');
+    const sendCurrentSignalBtn = document.getElementById('send-current-signal-btn');
     
     // Views
     const welcomeView = document.getElementById('welcome-view');
@@ -59,6 +70,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let ichimokuTimeframe = 'day';
     const ichimokuHiddenSeries = new Set();
     let candleDragState = null;
+    let selectedHoldingStock = null;
+    let currentStock = null;
+    let currentTradeSignal = null;
     
     // Recent Searches Storage Engine
     function saveToRecentSearches(code, name) {
@@ -105,6 +119,119 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem(key, JSON.stringify(arr));
     }
 
+    function readHoldings() {
+        let stored = [];
+        try {
+            stored = JSON.parse(localStorage.getItem('holding_stocks') || '[]');
+        } catch (error) {
+            console.error(error);
+        }
+        return stored.slice(0, 10).map((item) => {
+            if (typeof item === 'string') {
+                return { code: '', name: item, quantity: 0, core: true };
+            }
+            return {
+                code: String(item.code || '').trim().toUpperCase(),
+                name: String(item.name || item.code || '').trim(),
+                quantity: Math.max(0, parseInt(item.quantity, 10) || 0),
+                core: item.core !== false
+            };
+        }).filter((item) => item.name);
+    }
+
+    function saveHoldings(holdings) {
+        localStorage.setItem('holding_stocks', JSON.stringify(holdings.slice(0, 10)));
+    }
+
+    function findHolding(code) {
+        return readHoldings().find((item) => item.code && item.code === String(code || '').toUpperCase());
+    }
+
+    function setPortfolioStatus(message, type = '') {
+        if (!portfolioSignalStatus) return;
+        portfolioSignalStatus.textContent = message || '';
+        portfolioSignalStatus.className = `portfolio-signal-status ${type}`.trim();
+    }
+
+    function renderHoldings() {
+        const holdings = readHoldings();
+        saveHoldings(holdings);
+        holdingList.innerHTML = '';
+        if (!holdings.length) {
+            holdingContainer.classList.add('hidden');
+            return;
+        }
+        holdings.forEach((holding) => {
+            const btn = document.createElement('button');
+            btn.className = `recent-badge holding-badge${holding.core ? ' core' : ''}`;
+            const label = document.createElement('span');
+            label.textContent = `${holding.name}${holding.quantity ? ` ${holding.quantity.toLocaleString()}주` : ''}`;
+            btn.appendChild(label);
+            if (holding.core) {
+                const core = document.createElement('span');
+                core.className = 'core-mark';
+                core.textContent = 'CORE';
+                btn.appendChild(core);
+            }
+            const remove = document.createElement('span');
+            remove.className = 'named-remove';
+            remove.textContent = '×';
+            btn.appendChild(remove);
+            btn.addEventListener('click', () => {
+                searchInput.value = holding.name;
+                if (holding.code) loadStockPerformance(holding.code);
+                else openNamedStock(holding.name);
+            });
+            remove.addEventListener('click', (event) => {
+                event.stopPropagation();
+                saveHoldings(holdings.filter((item) => item !== holding));
+                renderHoldings();
+                if (currentStock) renderTradeSignal(currentTradeSignal);
+            });
+            holdingList.appendChild(btn);
+        });
+        holdingContainer.classList.remove('hidden');
+    }
+
+    async function addOrUpdateHolding() {
+        const quantity = parseInt(holdingQuantityInput?.value, 10);
+        if (!quantity || quantity < 1) {
+            setPortfolioStatus('전체 보유수량을 1주 이상 입력해 주세요.', 'error');
+            holdingQuantityInput?.focus();
+            return;
+        }
+        let stock = selectedHoldingStock;
+        const query = holdingInput?.value.trim();
+        if (!stock || (query && stock.name !== query)) {
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const items = response.ok ? await response.json() : [];
+                stock = items[0];
+            } catch (error) {
+                console.error(error);
+            }
+        }
+        if (!stock?.code) {
+            setPortfolioStatus('검색 결과에서 보유종목을 선택해 주세요.', 'error');
+            return;
+        }
+        let holdings = readHoldings().filter((item) => item.code !== stock.code);
+        holdings.unshift({
+            code: stock.code,
+            name: stock.name,
+            quantity,
+            core: holdingCoreInput?.checked !== false
+        });
+        saveHoldings(holdings);
+        selectedHoldingStock = null;
+        holdingInput.value = '';
+        holdingQuantityInput.value = '';
+        holdingAutocompleteList?.classList.add('hidden');
+        setPortfolioStatus(`${stock.name} 보유수량을 저장했습니다.`, 'success');
+        renderHoldings();
+        if (currentStock?.code === stock.code) renderTradeSignal(currentTradeSignal);
+    }
+
     async function openNamedStock(name) {
         const q = (name || '').trim();
         if (!q) return;
@@ -149,15 +276,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize Recent Searches
     renderRecentSearches();
-    renderNamedList('holding_stocks', holdingContainer, holdingList);
+    renderHoldings();
     renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
     if (addHoldingBtn) {
-        addHoldingBtn.addEventListener('click', () => {
-            saveNamedList('holding_stocks', holdingInput.value);
-            holdingInput.value = '';
-            if (holdingAutocompleteList) holdingAutocompleteList.classList.add('hidden');
-            renderNamedList('holding_stocks', holdingContainer, holdingList);
-        });
+        addHoldingBtn.addEventListener('click', addOrUpdateHolding);
     }
     if (addFavoriteBtn) {
         addFavoriteBtn.addEventListener('click', () => {
@@ -237,12 +359,10 @@ document.addEventListener('DOMContentLoaded', () => {
         holdingInput.addEventListener('keyup', (e) => {
             const query = holdingInput.value.trim();
             if (e.key === 'Enter') {
-                saveNamedList('holding_stocks', holdingInput.value);
-                holdingInput.value = '';
-                holdingAutocompleteList.classList.add('hidden');
-                renderNamedList('holding_stocks', holdingContainer, holdingList);
+                addOrUpdateHolding();
                 return;
             }
+            selectedHoldingStock = null;
             if (!query) {
                 holdingAutocompleteList.classList.add('hidden');
                 return;
@@ -264,10 +384,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         li.innerHTML = `<div class="ac-name-wrapper"><span class="ac-name">${item.name}</span><span class="ac-code">${item.code}</span></div>`;
                         li.addEventListener('click', () => {
                             holdingInput.value = item.name;
-                            saveNamedList('holding_stocks', item.name);
-                            holdingInput.value = '';
+                            selectedHoldingStock = item;
                             holdingAutocompleteList.classList.add('hidden');
-                            renderNamedList('holding_stocks', holdingContainer, holdingList);
+                            holdingQuantityInput?.focus();
                         });
                         holdingAutocompleteList.appendChild(li);
                     });
@@ -422,6 +541,8 @@ document.addEventListener('DOMContentLoaded', () => {
             sectorBenchmarkLabel = data.sector_benchmark?.name || data.stock.sector_name || '업종지수';
             rawOhlcData = data.ohlc || [];
             rawForeignRatioData = data.foreign_ratio || [];
+            currentStock = data.stock;
+            currentTradeSignal = data.trade_signal || null;
             
             renderDashboard(data);
             
@@ -443,6 +564,120 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function formatSignalDate(value) {
+        const text = String(value || '');
+        return /^(\d{8})$/.test(text) ? `${text.slice(0, 4)}.${text.slice(4, 6)}.${text.slice(6)}` : text;
+    }
+
+    function signalActionLabel(action) {
+        if (action === 'PARTIAL_SELL') return '부분매도';
+        if (action === 'PARTIAL_BUY') return '부분매수';
+        return '관망';
+    }
+
+    function recommendedQuantity(signal, holding) {
+        if (!signal || !holding?.quantity || signal.action === 'HOLD') return 0;
+        const quantity = Math.max(1, Math.ceil(holding.quantity * signal.percentage / 100));
+        return signal.action === 'PARTIAL_SELL' ? Math.min(holding.quantity, quantity) : quantity;
+    }
+
+    function renderTradeSignal(signal) {
+        if (!tradeSignalCard || !signal || !currentStock) {
+            tradeSignalCard?.classList.add('hidden');
+            return;
+        }
+        tradeSignalCard.classList.remove('hidden');
+        const holding = findHolding(currentStock.code);
+        const isCoreHolding = Boolean(holding?.core && holding.quantity > 0);
+        const quantity = recommendedQuantity(signal, holding);
+        const actionLabel = signalActionLabel(signal.action);
+
+        tradeSignalDate.textContent = `${formatSignalDate(signal.as_of)} 종가 기준 · ${signal.track.replace('_', ' ')}`;
+        tradeSignalAction.textContent = `${actionLabel} ${signal.percentage.toFixed(1)}%`;
+        tradeSignalAction.className = `trade-signal-action ${signal.action.toLowerCase().replace('_', '-')}`;
+        if (isCoreHolding) {
+            tradeSignalQuantity.textContent = signal.action === 'HOLD'
+                ? `전체 ${holding.quantity.toLocaleString()}주 · 주문 권고 없음`
+                : `전체 ${holding.quantity.toLocaleString()}주 중 ${quantity.toLocaleString()}주 ${actionLabel} 권고`;
+        } else {
+            tradeSignalQuantity.textContent = 'CORE 보유종목과 전체 보유수량을 등록하면 권고 주식 수를 계산합니다.';
+        }
+
+        tradeSignalDetails.innerHTML = '';
+        const scoreRow = document.createElement('div');
+        scoreRow.className = 'signal-score-row';
+        scoreRow.innerHTML = `<span class="signal-score sell">매도 ${signal.sell_percentage.toFixed(1)}%</span><span class="signal-score buy">매수 ${signal.buy_percentage.toFixed(1)}%</span>`;
+        tradeSignalDetails.appendChild(scoreRow);
+        const signals = signal.signals || [];
+        if (signals.length) {
+            const list = document.createElement('div');
+            list.className = 'signal-trigger-list';
+            signals.forEach((item) => {
+                const row = document.createElement('div');
+                row.className = 'signal-trigger';
+                row.innerHTML = `<strong>${item.group}군</strong><span>${item.name}</span><b>${item.weight}%</b>`;
+                list.appendChild(row);
+            });
+            tradeSignalDetails.appendChild(list);
+        } else {
+            const empty = document.createElement('p');
+            empty.className = 'signal-empty';
+            empty.textContent = '오늘 새로 확정된 부분매매 신호가 없습니다.';
+            tradeSignalDetails.appendChild(empty);
+        }
+        sendCurrentSignalBtn.disabled = !isCoreHolding;
+        tradeSignalNote.textContent = isCoreHolding
+            ? '주문은 자동 실행되지 않습니다. 실제 매매 전 가격과 계좌 상태를 확인하세요.'
+            : '이 종목을 CORE로 등록하거나 기존 보유정보를 다시 저장해 주세요.';
+    }
+
+    async function requestPortfolioSignals(holdings, notify) {
+        const response = await fetch('/api/portfolio-signals', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ holdings, notify })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'CORE 신호 점검에 실패했습니다.');
+        return payload;
+    }
+
+    async function checkCoreSignals(onlyCurrent = false) {
+        const coreHoldings = readHoldings().filter((item) => item.core && item.code && item.quantity > 0);
+        const holdings = onlyCurrent
+            ? coreHoldings.filter((item) => item.code === currentStock?.code)
+            : coreHoldings;
+        if (!holdings.length) {
+            setPortfolioStatus('종목코드와 보유수량이 저장된 CORE 종목이 없습니다.', 'error');
+            return;
+        }
+        checkCoreSignalsBtn.disabled = true;
+        sendCurrentSignalBtn.disabled = true;
+        setPortfolioStatus(`${holdings.length}개 CORE 종목의 신호를 점검하는 중...`);
+        try {
+            const payload = await requestPortfolioSignals(holdings, true);
+            const currentResult = payload.results.find((item) => item.code === currentStock?.code && item.signal);
+            if (currentResult) {
+                currentTradeSignal = currentResult.signal;
+                renderTradeSignal(currentTradeSignal);
+            }
+            const errorCount = payload.results.filter((item) => item.error).length;
+            const type = payload.telegram.sent && !errorCount ? 'success' : (errorCount ? 'error' : '');
+            setPortfolioStatus(`${payload.results.length}종목 점검 완료 · ${payload.telegram.message}`, type);
+        } catch (error) {
+            setPortfolioStatus(error.message, 'error');
+        } finally {
+            checkCoreSignalsBtn.disabled = false;
+            renderTradeSignal(currentTradeSignal);
+        }
+    }
+
+    checkCoreSignalsBtn?.addEventListener('click', () => checkCoreSignals(false));
+    sendCurrentSignalBtn?.addEventListener('click', () => checkCoreSignals(true));
+    holdingQuantityInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') addOrUpdateHolding();
+    });
+
     // 8. Render Dashboard UI
     function renderDashboard(data) {
         // A. Set Header Meta
@@ -453,6 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
         marketBadge.className = 'stock-badge ' + (data.stock.market === '코스피' ? 'market-badge-kospi' : 'market-badge-kosdaq');
         
         sectorBadge.textContent = data.stock.sector_name;
+        renderTradeSignal(data.trade_signal);
         
         // B. Populate Table
         renderPerformanceTable(data.table);
