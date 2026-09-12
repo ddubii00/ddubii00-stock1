@@ -334,12 +334,19 @@ def get_stock_detail(code):
     res.encoding = 'utf-8'
     soup = BeautifulSoup(res.text, 'html.parser')
     
-    # Get sector
-    sector_link = soup.find('a', href=re.compile(r'sise_group_detail\.naver\?type=upjong'))
+    # Get sector. Naver can reorder query parameters in the sector URL.
+    sector_link = soup.find(
+        'a',
+        href=lambda href: bool(
+            href
+            and 'sise_group_detail.naver' in href
+            and 'type=upjong' in href
+        )
+    )
     sector_name = "미분류"
     sector_code = ""
     if sector_link:
-        sector_name = sector_link.text.strip()
+        sector_name = sector_link.get_text(strip=True)
         href = sector_link.get('href', '')
         match = re.search(r'no=(\d+)', href)
         if match:
@@ -907,9 +914,13 @@ def api_performance():
                     'source': 'Naver 업종 구성종목(시총 상위 10개)'
                 }
             else:
-                return jsonify({
-                    'error': f"KRX 공식 업종지수 및 시총상위10 프록시 데이터를 불러오지 못했습니다. 기준: {sector_benchmark.get('name', '업종지수')}"
-                }), 502
+                sector_history = market_history
+                sector_benchmark = {
+                    'name': f"{market_symbol} 시장지수(업종 데이터 대체)",
+                    'code': market_symbol,
+                    'symbol': market_symbol,
+                    'source': '업종 데이터 로딩 실패 시 시장지수 대체'
+                }
                     
     # 5. Calculate returns for periods
     aligned_dates = [x['date'] for x in stock_history]
