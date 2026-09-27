@@ -326,33 +326,68 @@ def fetch_us_stock_metadata(symbol):
     return name, market, sector
 
 def get_stock_detail(code):
-    url = f"https://finance.naver.com/item/main.naver?code={code}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    res = requests.get(url, headers=headers)
-    res.encoding = 'utf-8'
-    soup = BeautifulSoup(res.text, 'html.parser')
-    
-    # Get sector. Naver can reorder query parameters in the sector URL.
-    sector_link = soup.find(
-        'a',
-        href=lambda href: bool(
-            href
-            and 'sise_group_detail.naver' in href
-            and 'type=upjong' in href
+    # The legacy Naver Finance detail page now redirects to the new service,
+    # which removes the old sector link. Read the current public JSON first.
+    mobile_headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
+    try:
+        response = requests.get(
+            f'https://m.stock.naver.com/front-api/stock/domestic/integration?code={code}&endType=stock',
+            headers=mobile_headers,
+            timeout=7,
         )
-    )
-    sector_name = "미분류"
-    sector_code = ""
-    if sector_link:
-        sector_name = sector_link.get_text(strip=True)
-        href = sector_link.get('href', '')
-        match = re.search(r'no=(\d+)', href)
-        if match:
-            sector_code = match.group(1)
-            
-    return sector_name, sector_code
+        payload = response.json() if response.ok else {}
+        result = payload.get('result') or {}
+        sector_code = str(result.get('industryCode') or '').strip()
+        if sector_code:
+            sector_response = requests.get(
+                'https://m.stock.naver.com/front-api/domestic/sector/item/list',
+                params={
+                    'sectorCode': sector_code,
+                    'sectorType': 'upjong',
+                    'sectorSortType': 'CHANGE_RATE',
+                    'page': 1,
+                    'pageSize': 1,
+                },
+                headers=mobile_headers,
+                timeout=7,
+            )
+            sector_payload = sector_response.json() if sector_response.ok else {}
+            sector_info = (sector_payload.get('result') or {}).get('sectorInfo') or {}
+            sector_name = str(sector_info.get('sectorName') or '').strip()
+            if sector_name:
+                return sector_name, sector_code
+    except (requests.RequestException, ValueError, TypeError) as error:
+        print(f"Error fetching current Naver sector detail for {code}: {error}")
+
+    # Keep the legacy parser as a fallback for temporary API outages.
+    try:
+        url = f"https://finance.naver.com/item/main.naver?code={code}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        res = requests.get(url, headers=headers, timeout=7)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        # Get sector. Naver can reorder query parameters in the sector URL.
+        sector_link = soup.find(
+            'a',
+            href=lambda href: bool(
+                href
+                and 'sise_group_detail.naver' in href
+                and 'type=upjong' in href
+            )
+        )
+        if sector_link:
+            sector_name = sector_link.get_text(strip=True)
+            href = sector_link.get('href', '')
+            match = re.search(r'no=(\d+)', href)
+            if match:
+                return sector_name, match.group(1)
+    except requests.RequestException as error:
+        print(f"Error fetching legacy Naver sector detail for {code}: {error}")
+
+    return "미분류", ""
 
 def get_price_history(code, count=500):
     url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count={count}&requestType=0"
@@ -414,6 +449,38 @@ def get_foreign_ratio_history(code, count=300):
 def get_sector_stocks(sector_code):
     if not sector_code:
         return []
+    headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
+
+    try:
+        response = requests.get(
+            'https://m.stock.naver.com/front-api/domestic/sector/item/list',
+            params={
+                'sectorCode': sector_code,
+                'sectorType': 'upjong',
+                'sectorSortType': 'CHANGE_RATE',
+                'page': 1,
+                'pageSize': 50,
+            },
+            headers=headers,
+            timeout=7,
+        )
+        payload = response.json() if response.ok else {}
+        items = (payload.get('result') or {}).get('items') or []
+        current_stocks = []
+        for item in items:
+            code = str(item.get('itemCode') or item.get('id') or '').strip()
+            name = str(item.get('name') or '').strip()
+            if code and name:
+                current_stocks.append({
+                    'code': code,
+                    'name': name,
+                    'market_cap': _parse_number(item.get('marketValue')) or 0,
+                })
+        if current_stocks:
+            return current_stocks
+    except (requests.RequestException, ValueError, TypeError) as error:
+        print(f"Error fetching current Naver sector stocks({sector_code}): {error}")
+
     headers = {'User-Agent': 'Mozilla/5.0'}
     results = []
     seen = set()
@@ -616,19 +683,28 @@ def compute_peer_average_history(base_history, peer_histories):
     return sector_history
 
 def build_top10_mcap_sector_proxy(base_code, base_history, sector_stocks):
-    candidates = []
-    for peer in sorted(sector_stocks, key=lambda x: x.get('market_cap', 0), reverse=True):
-        pcode = peer.get('code')
-        if not pcode or pcode == base_code:
-            continue
-        ph = get_price_history(pcode, count=500)
-        if not ph:
-            continue
-        candidates.append((pcode, peer.get('market_cap', 0), ph))
-    if not candidates:
+    top10 = [
+        peer for peer in sorted(sector_stocks, key=lambda x: x.get('market_cap', 0), reverse=True)
+        if peer.get('code') and peer.get('code') != base_code
+    ][:10]
+    if not top10:
         return []
-    top10 = candidates[:10]
-    peer_histories = {code: hist for code, _, hist in top10}
+
+    peer_histories = {}
+    with ThreadPoolExecutor(max_workers=min(5, len(top10))) as executor:
+        futures = {
+            executor.submit(get_price_history, peer['code'], count=500): peer['code']
+            for peer in top10
+        }
+        for future in as_completed(futures):
+            code = futures[future]
+            try:
+                history = future.result()
+                if history:
+                    peer_histories[code] = history
+            except Exception as error:
+                print(f"Error fetching sector proxy history for {code}: {error}")
+
     return compute_peer_average_history(base_history, peer_histories)
 
 def parse_date(date_str):
@@ -690,6 +766,36 @@ def calculate_returns(history, periods):
             'latest_close': latest_close
         }
     return returns
+
+
+def normalize_chart_history(chart_dates, history):
+    """Align a benchmark to stock trading dates and normalize it to 100."""
+    prices_by_date = {
+        item.get('date'): item.get('close')
+        for item in history
+        if item.get('date') and item.get('close') not in (None, 0)
+    }
+    source_dates = sorted(prices_by_date)
+    if not source_dates:
+        return [None] * len(chart_dates)
+
+    aligned = []
+    source_index = 0
+    current_price = None
+    for date in chart_dates:
+        while source_index < len(source_dates) and source_dates[source_index] <= date:
+            current_price = prices_by_date[source_dates[source_index]]
+            source_index += 1
+        aligned.append(current_price)
+
+    base_price = next((price for price in aligned if price not in (None, 0)), None)
+    if base_price is None:
+        # This can happen when a benchmark begins after the requested window.
+        # Keep the series visible at its first available value instead of using
+        # a synthetic base of 1.0.
+        base_price = prices_by_date[source_dates[0]]
+    aligned = [price if price not in (None, 0) else base_price for price in aligned]
+    return [(price / base_price) * 100 for price in aligned]
 
 @app.route('/')
 def home():
@@ -957,37 +1063,9 @@ def api_performance():
     # Generate interactive chart series data (last 240 trading days ~ 1 year)
     chart_len = min(250, len(stock_history))
     chart_dates = aligned_dates[-chart_len:]
-    chart_start_date = chart_dates[0]
-    
-    chart_stock = []
-    chart_market = []
-    chart_sector = []
-    
-    # Maps for easy lookups
-    stock_map = {x['date']: x['close'] for x in stock_history}
-    market_map = {x['date']: x['close'] for x in market_history}
-    sector_map = {x['date']: x['close'] for x in sector_history}
-    
-    stock_base = next((stock_map[d] for d in chart_dates if d in stock_map), 1.0)
-    market_base = next((market_map[d] for d in chart_dates if d in market_map), 1.0)
-    sector_base = next((sector_map[d] for d in chart_dates if d in sector_map), 1.0)
-    prev_stock = stock_base
-    prev_market = market_base
-    prev_sector = sector_base
-    
-    for date in chart_dates:
-        prev_stock = stock_map.get(date, prev_stock)
-        prev_market = market_map.get(date, prev_market)
-        prev_sector = sector_map.get(date, prev_sector)
-        s_val = (prev_stock / stock_base) * 100 if stock_base else 100.0
-        m_val = (prev_market / market_base) * 100 if market_base else 100.0
-        sec_val = (prev_sector / sector_base) * 100 if sector_base else 100.0
-        
-        formatted_date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
-        
-        chart_stock.append({'date': formatted_date, 'value': s_val})
-        chart_market.append({'date': formatted_date, 'value': m_val})
-        chart_sector.append({'date': formatted_date, 'value': sec_val})
+    chart_stock = normalize_chart_history(chart_dates, stock_history)
+    chart_market = normalize_chart_history(chart_dates, market_history)
+    chart_sector = normalize_chart_history(chart_dates, sector_history)
         
     try:
         trade_signal = analyze_trade_signal(stock_history, 0)
@@ -1009,9 +1087,9 @@ def api_performance():
         'table': performance_table,
         'chart': {
             'dates': [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in chart_dates],
-            'stock': [x['value'] for x in chart_stock],
-            'market': [x['value'] for x in chart_market],
-            'sector': [x['value'] for x in chart_sector]
+            'stock': chart_stock,
+            'market': chart_market,
+            'sector': chart_sector
         },
         'ohlc': stock_history,
         'foreign_ratio': foreign_ratio,

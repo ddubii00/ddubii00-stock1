@@ -73,6 +73,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let selectedHoldingStock = null;
     let currentStock = null;
     let currentTradeSignal = null;
+    const MAX_SAVED_STOCKS = 30;
     
     // Recent Searches Storage Engine
     function saveToRecentSearches(code, name) {
@@ -115,7 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let arr = JSON.parse(localStorage.getItem(key) || '[]');
         arr = arr.filter(x => x !== val);
         arr.unshift(val);
-        arr = arr.slice(0, 10);
+        arr = arr.slice(0, MAX_SAVED_STOCKS);
         localStorage.setItem(key, JSON.stringify(arr));
     }
 
@@ -126,7 +127,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error(error);
         }
-        return stored.slice(0, 10).map((item) => {
+        return stored.slice(0, MAX_SAVED_STOCKS).map((item) => {
             if (typeof item === 'string') {
                 return { code: '', name: item, quantity: 0, core: true };
             }
@@ -140,7 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function saveHoldings(holdings) {
-        localStorage.setItem('holding_stocks', JSON.stringify(holdings.slice(0, 10)));
+        localStorage.setItem('holding_stocks', JSON.stringify(holdings.slice(0, MAX_SAVED_STOCKS)));
     }
 
     function findHolding(code) {
