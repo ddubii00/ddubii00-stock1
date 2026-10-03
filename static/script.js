@@ -2,7 +2,52 @@
    Antigravity Stock Relative Returns Dashboard - Frontend Controller
    ========================================================================== */
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    let sharedLists = {};
+    let csrfToken = '';
+    let saveQueue = Promise.resolve();
+    let pendingSaves = 0;
+    const sharedKeys = ['holding_stocks', 'favorite_stocks', 'recent_searches'];
+    const listStorage = {
+        getItem(key) { return JSON.stringify(sharedLists[key] || []); },
+        setItem(key, value) {
+            const items = JSON.parse(value);
+            sharedLists[key] = items;
+            pendingSaves += 1;
+            saveQueue = saveQueue.then(async () => {
+                const response = await fetch('./api/state', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+                    body: JSON.stringify({ [key]: items })
+                });
+                if (!response.ok) throw new Error('서버 저장에 실패했습니다. 다시 로그인하거나 변경을 재시도해 주세요.');
+                localStorage.setItem(key, JSON.stringify(items));
+            }).catch(error => alert(error.message)).finally(() => { pendingSaves -= 1; });
+        }
+    };
+    try {
+        const response = await fetch('./api/state', { cache: 'no-store' });
+        if (response.status === 401) { window.location.assign('./login'); return; }
+        if (!response.ok) throw new Error('저장된 목록을 불러오지 못했습니다. 새로고침해 주세요.');
+        const payload = await response.json();
+        csrfToken = payload.csrf;
+        sharedLists = payload.state;
+        if (!payload.initialized) {
+            const migrated = Object.fromEntries(sharedKeys.map(key => {
+                try { return [key, JSON.parse(localStorage.getItem(key) || '[]')]; }
+                catch { return [key, []]; }
+            }));
+            if (Object.values(migrated).some(items => items.length)) {
+                const saved = await fetch('./api/state', {
+                    method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken, 'X-State-Import-If-Empty': '1' },
+                    body: JSON.stringify(migrated)
+                });
+                if (!saved.ok) throw new Error('기존 목록의 서버 저장에 실패했습니다.');
+                sharedLists = (await saved.json()).state;
+            }
+        }
+    } catch (error) { alert(error.message); return; }
+
     // DOM Elements
     const searchInput = document.getElementById('stock-search');
     const autocompleteList = document.getElementById('autocomplete-list');
@@ -78,19 +123,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // Recent Searches Storage Engine
     function saveToRecentSearches(code, name) {
         if (!code || !name) return;
-        let recent = JSON.parse(localStorage.getItem('recent_searches') || '[]');
+        let recent = JSON.parse(listStorage.getItem('recent_searches') || '[]');
         // Remove duplicate to bring it to the front
         recent = recent.filter(item => item.code !== code);
         // Add to front
         recent.unshift({ code, name });
         // Keep only top 10 recent searches
         recent = recent.slice(0, 10);
-        localStorage.setItem('recent_searches', JSON.stringify(recent));
+        listStorage.setItem('recent_searches', JSON.stringify(recent));
         renderRecentSearches();
     }
 
     function renderRecentSearches() {
-        const recent = JSON.parse(localStorage.getItem('recent_searches') || '[]');
+        const recent = JSON.parse(listStorage.getItem('recent_searches') || '[]');
         if (recent.length === 0) {
             recentSearchesContainer.classList.add('hidden');
             return;
@@ -113,17 +158,17 @@ document.addEventListener('DOMContentLoaded', () => {
     function saveNamedList(key, name) {
         const val = (name || '').trim();
         if (!val) return;
-        let arr = JSON.parse(localStorage.getItem(key) || '[]');
+        let arr = JSON.parse(listStorage.getItem(key) || '[]');
         arr = arr.filter(x => x !== val);
         arr.unshift(val);
         arr = arr.slice(0, MAX_SAVED_STOCKS);
-        localStorage.setItem(key, JSON.stringify(arr));
+        listStorage.setItem(key, JSON.stringify(arr));
     }
 
     function readHoldings() {
         let stored = [];
         try {
-            stored = JSON.parse(localStorage.getItem('holding_stocks') || '[]');
+            stored = JSON.parse(listStorage.getItem('holding_stocks') || '[]');
         } catch (error) {
             console.error(error);
         }
@@ -141,7 +186,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function saveHoldings(holdings) {
-        localStorage.setItem('holding_stocks', JSON.stringify(holdings.slice(0, MAX_SAVED_STOCKS)));
+        listStorage.setItem('holding_stocks', JSON.stringify(holdings.slice(0, MAX_SAVED_STOCKS)));
     }
 
     function findHolding(code) {
@@ -156,7 +201,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderHoldings() {
         const holdings = readHoldings();
-        saveHoldings(holdings);
         holdingList.innerHTML = '';
         if (!holdings.length) {
             holdingContainer.classList.add('hidden');
@@ -205,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const query = holdingInput?.value.trim();
         if (!stock || (query && stock.name !== query)) {
             try {
-                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const response = await fetch(`./api/search?q=${encodeURIComponent(query)}`);
                 const items = response.ok ? await response.json() : [];
                 stock = items[0];
             } catch (error) {
@@ -237,7 +281,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const q = (name || '').trim();
         if (!q) return;
         try {
-            const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            const res = await fetch(`./api/search?q=${encodeURIComponent(q)}`);
             if (!res.ok) return;
             const items = await res.json();
             if (items.length > 0) {
@@ -250,7 +294,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderNamedList(key, container, listEl) {
-        const arr = JSON.parse(localStorage.getItem(key) || '[]');
+        const arr = JSON.parse(listStorage.getItem(key) || '[]');
         listEl.innerHTML = '';
         if (!arr.length) {
             container.classList.add('hidden');
@@ -267,7 +311,7 @@ document.addEventListener('DOMContentLoaded', () => {
             removeEl?.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const next = arr.filter(x => x !== name);
-                localStorage.setItem(key, JSON.stringify(next));
+                listStorage.setItem(key, JSON.stringify(next));
                 renderNamedList(key, container, listEl);
             });
             listEl.appendChild(btn);
@@ -279,6 +323,21 @@ document.addEventListener('DOMContentLoaded', () => {
     renderRecentSearches();
     renderHoldings();
     renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
+    setInterval(async () => {
+        if (pendingSaves || document.hidden) return;
+        try {
+            const response = await fetch('./api/state', { cache: 'no-store' });
+            if (response.status === 401) { window.location.assign('./login'); return; }
+            if (!response.ok) return;
+            const payload = await response.json();
+            if (pendingSaves) return;
+            sharedLists = payload.state;
+            csrfToken = payload.csrf;
+            renderRecentSearches();
+            renderHoldings();
+            renderNamedList('favorite_stocks', favoriteContainer, favoriteList);
+        } catch (error) { console.error(error); }
+    }, 15000);
     if (addHoldingBtn) {
         addHoldingBtn.addEventListener('click', addOrUpdateHolding);
     }
@@ -371,7 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
             clearTimeout(holdingDebounce);
             holdingDebounce = setTimeout(async () => {
                 try {
-                    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    const res = await fetch(`./api/search?q=${encodeURIComponent(query)}`);
                     if (!res.ok) throw new Error('holding search failed');
                     const items = await res.json();
                     holdingAutocompleteList.innerHTML = '';
@@ -416,7 +475,7 @@ document.addEventListener('DOMContentLoaded', () => {
             clearTimeout(favoriteDebounce);
             favoriteDebounce = setTimeout(async () => {
                 try {
-                    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    const res = await fetch(`./api/search?q=${encodeURIComponent(query)}`);
                     if (!res.ok) throw new Error('favorite search failed');
                     const items = await res.json();
                     favoriteAutocompleteList.innerHTML = '';
@@ -449,7 +508,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function fetchAutocomplete(query) {
         if (!query) return;
         try {
-            const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+            const res = await fetch(`./api/search?q=${encodeURIComponent(query)}`);
             if (!res.ok) throw new Error('Search failed');
             const data = await res.json();
             renderAutocomplete(data);
@@ -504,7 +563,7 @@ document.addEventListener('DOMContentLoaded', () => {
         showLoading(true);
         
         try {
-            const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+            const res = await fetch(`./api/search?q=${encodeURIComponent(query)}`);
             const data = await res.json();
             
             if (data.length > 0) {
@@ -529,7 +588,7 @@ document.addEventListener('DOMContentLoaded', () => {
         mainDashboard.classList.add('hidden');
         
         try {
-            const res = await fetch(`/api/performance?code=${code}`);
+            const res = await fetch(`./api/performance?code=${code}`);
             if (!res.ok) {
                 const errData = await res.json();
                 throw new Error(errData.error || '실패');
@@ -633,7 +692,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function requestPortfolioSignals(holdings, notify) {
-        const response = await fetch('/api/portfolio-signals', {
+        const response = await fetch('./api/portfolio-signals', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ holdings, notify })

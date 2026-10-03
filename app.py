@@ -11,6 +11,8 @@ import os
 from signal_engine import analyze_trade_signal
 
 app = Flask(__name__)
+from shared_state import install_shared_state
+install_shared_state(app)
 
 # Common Korean stock nicknames
 NICKNAMES = {
