@@ -38,7 +38,7 @@ def install_shared_state(app):
                 return jsonify(error='로그인이 필요합니다.'), 401
             return redirect('./login')
         if request.path == '/api/state' and request.method == 'PATCH':
-            if not hmac.compare_digest(request.headers.get('X-CSRF-Token', ''), session.get('csrf', secrets.token_hex(32))):
+            if not hmac.compare_digest(request.headers.get('X-CSRF-Token', '').encode('utf-8'), session.get('csrf', secrets.token_hex(32)).encode('utf-8')):
                 return jsonify(error='인증이 만료되었습니다. 새로고침해 주세요.'), 403
 
     @app.route('/login', methods=['GET', 'POST'])
@@ -46,7 +46,7 @@ def install_shared_state(app):
         error = ''
         if request.method == 'POST':
             expected = os.environ.get('STOCK_APP_PASSWORD', '')
-            if expected and hmac.compare_digest(request.form.get('password', ''), expected):
+            if expected and hmac.compare_digest(request.form.get('password', '').encode('utf-8'), expected.encode('utf-8')):
                 session.clear()
                 session['authenticated'] = True
                 return redirect('./')

@@ -29,6 +29,10 @@ class SharedStateTests(unittest.TestCase):
         self.assertEqual(client.get('/').status_code, 302)
         self.assertEqual(client.get('/api/state').status_code, 401)
         self.assertIn('비밀번호가 올바르지', client.post('/login', data={'password': 'wrong'}).text)
+        response = client.post('/login', data={'password': '암호１２２２'})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('비밀번호가 올바르지', response.text)
+        self.assertEqual(client.get('/api/state').status_code, 401)
         self.login(client)
         self.assertEqual(client.patch('/api/state', json={'favorite_stocks': []}).status_code, 403)
 
